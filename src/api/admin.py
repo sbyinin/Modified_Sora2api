@@ -283,6 +283,8 @@ async def get_tokens(token: str = Depends(verify_admin_token)) -> List[dict]:
             "sora2_total_count": token.sora2_total_count,
             "sora2_remaining_count": token.sora2_remaining_count,
             "sora2_cooldown_until": token.sora2_cooldown_until.isoformat() if token.sora2_cooldown_until else None,
+            # 计算重置积分倒计时（秒）
+            "access_resets_in_seconds": int((token.sora2_cooldown_until - datetime.now()).total_seconds()) if token.sora2_cooldown_until and token.sora2_cooldown_until > datetime.now() else 0,
             # 功能开关
             "image_enabled": token.image_enabled,
             "video_enabled": token.video_enabled,
