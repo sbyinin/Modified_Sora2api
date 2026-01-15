@@ -452,14 +452,19 @@ async def delete_token(token_id: int, token: str = Depends(verify_admin_token)):
 @router.post("/api/tokens/batch-add")
 async def batch_add_tokens(
     request: BatchAddTokensRequest,
+    max_concurrency: int = 5,
     token: str = Depends(verify_admin_token)
 ):
-    """Batch add multiple tokens
+    """Batch add multiple tokens with concurrent validation
     
     Adds multiple tokens at once with duplicate detection.
     - Skips tokens that already exist (by email)
     - Skips duplicate tokens within the same batch
     - Continues processing remaining tokens if one fails
+    - Uses concurrent validation for faster processing
+    
+    Args:
+        max_concurrency: Maximum concurrent add operations (default: 5)
     
     **Validates: Requirements 2.1, 2.2, 2.3, 2.4**
     """
@@ -467,7 +472,7 @@ async def batch_add_tokens(
         # Convert Pydantic models to dicts for the token manager
         tokens_data = [item.model_dump() for item in request.tokens]
         
-        result = await token_manager.batch_add_tokens(tokens_data)
+        result = await token_manager.batch_add_tokens(tokens_data, max_concurrency=max_concurrency)
         
         # Initialize concurrency counters for newly added tokens
         if concurrency_manager:
@@ -492,18 +497,21 @@ async def batch_add_tokens(
 async def batch_test_tokens(
     only_active: bool = True,
     only_disabled: bool = False,
+    max_concurrency: int = 5,
     token: str = Depends(verify_admin_token)
 ):
-    """Batch test all tokens
+    """Batch test all tokens with concurrent validation
 
     - only_active=True: Test only active tokens, auto-disable 401 tokens
     - only_disabled=True: Test only disabled tokens, auto-enable valid tokens
     - Both False: Test all tokens
+    - max_concurrency: Maximum concurrent test operations (default: 5)
     """
     try:
         result = await token_manager.batch_test_tokens(
             only_active=only_active,
-            only_disabled=only_disabled
+            only_disabled=only_disabled,
+            max_concurrency=max_concurrency
         )
         return {
             "success": True,

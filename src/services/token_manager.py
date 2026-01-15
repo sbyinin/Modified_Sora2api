@@ -1319,8 +1319,8 @@ class TokenManager:
             "results": results
         }
 
-    async def batch_add_tokens(self, tokens: List[dict]) -> dict:
-        """Batch add multiple tokens with duplicate detection
+    async def batch_add_tokens(self, tokens: List[dict], max_concurrency: int = 5) -> dict:
+        """Batch add multiple tokens with duplicate detection and concurrent validation
         
         Args:
             tokens: List of token dicts, each containing:
@@ -1334,6 +1334,7 @@ class TokenManager:
                 - video_enabled: Enable video generation (default: True)
                 - image_concurrency: Image concurrency limit (default: -1)
                 - video_concurrency: Video concurrency limit (default: -1)
+            max_concurrency: Maximum concurrent add operations (default: 5)
         
         Returns:
             {
@@ -1354,18 +1355,12 @@ class TokenManager:
         
         # Track emails we've seen in this batch to detect duplicates within the batch
         seen_emails = set()
+        seen_emails_lock = asyncio.Lock()
         
+        # Pre-filter tokens: check for empty tokens and duplicates (sync operations)
+        tokens_to_process = []
         for token_item in tokens:
             token_value = token_item.get("token", "")
-            st = token_item.get("st")
-            rt = token_item.get("rt")
-            client_id = token_item.get("client_id")
-            proxy_url = token_item.get("proxy_url")
-            remark = token_item.get("remark")
-            image_enabled = token_item.get("image_enabled", True)
-            video_enabled = token_item.get("video_enabled", True)
-            image_concurrency = token_item.get("image_concurrency", -1)
-            video_concurrency = token_item.get("video_concurrency", -1)
             
             detail = {
                 "token": token_value[:20] + "..." if len(token_value) > 20 else token_value,
@@ -1374,89 +1369,115 @@ class TokenManager:
                 "email": None
             }
             
-            try:
-                # Validate token is not empty
-                if not token_value or not token_value.strip():
-                    detail["status"] = "failed"
-                    detail["message"] = "Token is empty"
-                    failed_count += 1
-                    details.append(detail)
-                    continue
-                
-                # Decode JWT to get email for duplicate detection
-                try:
-                    decoded = await self.decode_jwt(token_value)
-                    jwt_email = None
-                    if "https://api.openai.com/profile" in decoded:
-                        jwt_email = decoded["https://api.openai.com/profile"].get("email")
-                    
-                    if jwt_email:
-                        detail["email"] = jwt_email
-                        
-                        # Check for duplicate within this batch
-                        if jwt_email in seen_emails:
-                            detail["status"] = "skipped"
-                            detail["message"] = f"Duplicate email in batch: {jwt_email}"
-                            skipped_count += 1
-                            details.append(detail)
-                            continue
-                        
-                        # Check for existing token in database
-                        existing_token = await self.db.get_token_by_email(jwt_email)
-                        if existing_token:
-                            detail["status"] = "skipped"
-                            detail["message"] = f"Token already exists for email: {jwt_email}"
-                            skipped_count += 1
-                            seen_emails.add(jwt_email)
-                            details.append(detail)
-                            continue
-                        
-                        seen_emails.add(jwt_email)
-                except Exception as e:
-                    # If JWT decode fails, continue with add_token which will handle validation
-                    pass
-                
-                # Add the token
-                new_token = await self.add_token(
-                    token_value=token_value,
-                    st=st,
-                    rt=rt,
-                    client_id=client_id,
-                    proxy_url=proxy_url,
-                    remark=remark,
-                    update_if_exists=False,
-                    image_enabled=image_enabled,
-                    video_enabled=video_enabled,
-                    image_concurrency=image_concurrency,
-                    video_concurrency=video_concurrency
-                )
-                
-                detail["status"] = "added"
-                detail["message"] = f"Token added successfully"
-                detail["email"] = new_token.email
-                detail["token_id"] = new_token.id
-                added_count += 1
-                
-                # Add delay between tokens to avoid rate limiting
-                await asyncio.sleep(0.5)
-                
-            except ValueError as e:
-                # Token already exists or validation error
-                error_msg = str(e)
-                if "已存在" in error_msg or "already exists" in error_msg.lower():
-                    detail["status"] = "skipped"
-                    detail["message"] = error_msg
-                    skipped_count += 1
-                else:
-                    detail["status"] = "failed"
-                    detail["message"] = error_msg
-                    failed_count += 1
-            except Exception as e:
+            # Validate token is not empty
+            if not token_value or not token_value.strip():
                 detail["status"] = "failed"
-                detail["message"] = str(e)
+                detail["message"] = "Token is empty"
                 failed_count += 1
+                details.append(detail)
+                continue
             
-            details.append(detail)
+            # Decode JWT to get email for duplicate detection (sync operation)
+            try:
+                decoded = await self.decode_jwt(token_value)
+                jwt_email = None
+                if "https://api.openai.com/profile" in decoded:
+                    jwt_email = decoded["https://api.openai.com/profile"].get("email")
+                
+                if jwt_email:
+                    detail["email"] = jwt_email
+                    
+                    # Check for duplicate within this batch
+                    if jwt_email in seen_emails:
+                        detail["status"] = "skipped"
+                        detail["message"] = f"Duplicate email in batch: {jwt_email}"
+                        skipped_count += 1
+                        details.append(detail)
+                        continue
+                    
+                    # Check for existing token in database
+                    existing_token = await self.db.get_token_by_email(jwt_email)
+                    if existing_token:
+                        detail["status"] = "skipped"
+                        detail["message"] = f"Token already exists for email: {jwt_email}"
+                        skipped_count += 1
+                        seen_emails.add(jwt_email)
+                        details.append(detail)
+                        continue
+                    
+                    seen_emails.add(jwt_email)
+            except Exception as e:
+                # If JWT decode fails, continue with add_token which will handle validation
+                pass
+            
+            tokens_to_process.append((token_item, detail))
+        
+        # Use semaphore for concurrent processing
+        semaphore = asyncio.Semaphore(max_concurrency)
+        results_lock = asyncio.Lock()
+        
+        async def add_single_token(token_item: dict, detail: dict):
+            nonlocal added_count, skipped_count, failed_count
+            
+            async with semaphore:
+                token_value = token_item.get("token", "")
+                st = token_item.get("st")
+                rt = token_item.get("rt")
+                client_id = token_item.get("client_id")
+                proxy_url = token_item.get("proxy_url")
+                remark = token_item.get("remark")
+                image_enabled = token_item.get("image_enabled", True)
+                video_enabled = token_item.get("video_enabled", True)
+                image_concurrency = token_item.get("image_concurrency", -1)
+                video_concurrency = token_item.get("video_concurrency", -1)
+                
+                try:
+                    # Add the token
+                    new_token = await self.add_token(
+                        token_value=token_value,
+                        st=st,
+                        rt=rt,
+                        client_id=client_id,
+                        proxy_url=proxy_url,
+                        remark=remark,
+                        update_if_exists=False,
+                        image_enabled=image_enabled,
+                        video_enabled=video_enabled,
+                        image_concurrency=image_concurrency,
+                        video_concurrency=video_concurrency
+                    )
+                    
+                    async with results_lock:
+                        detail["status"] = "added"
+                        detail["message"] = f"Token added successfully"
+                        detail["email"] = new_token.email
+                        detail["token_id"] = new_token.id
+                        added_count += 1
+                        details.append(detail)
+                    
+                except ValueError as e:
+                    # Token already exists or validation error
+                    error_msg = str(e)
+                    async with results_lock:
+                        if "已存在" in error_msg or "already exists" in error_msg.lower():
+                            detail["status"] = "skipped"
+                            detail["message"] = error_msg
+                            skipped_count += 1
+                        else:
+                            detail["status"] = "failed"
+                            detail["message"] = error_msg
+                            failed_count += 1
+                        details.append(detail)
+                except Exception as e:
+                    async with results_lock:
+                        detail["status"] = "failed"
+                        detail["message"] = str(e)
+                        failed_count += 1
+                        details.append(detail)
+        
+        # Execute all token additions concurrently
+        tasks = [add_single_token(token_item, detail) for token_item, detail in tokens_to_process]
+        await asyncio.gather(*tasks, return_exceptions=True)
         
         return {
             "success": True,
