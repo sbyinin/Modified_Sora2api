@@ -1,5 +1,7 @@
 """Redis manager for distributed locking and caching"""
 import asyncio
+import json
+import time
 from typing import Optional, Any
 from .config import config
 
@@ -215,6 +217,42 @@ class RedisManager:
             return await self._client.exists(key) > 0
         else:
             return key in self._local_cache
+
+    # ==================== Task Progress Cache ====================
+
+    async def cache_task_progress(
+        self,
+        task_id: str,
+        progress: float,
+        status: str,
+        extra_data: Optional[dict] = None,
+        ttl: int = 300
+    ) -> bool:
+        """Cache task progress with TTL"""
+        key = f"task:progress:{task_id}"
+        payload = {
+            "progress": progress,
+            "status": status,
+            "updated_at": time.time()
+        }
+        if extra_data:
+            payload.update(extra_data)
+        return await self.set(key, json.dumps(payload), ex=ttl)
+
+    async def get_task_progress_cache(self, task_id: str) -> Optional[dict]:
+        """Get cached task progress"""
+        key = f"task:progress:{task_id}"
+        data = await self.get(key)
+        if not data:
+            return None
+        try:
+            return json.loads(data)
+        except json.JSONDecodeError:
+            return None
+
+    async def delete_task_progress_cache(self, task_id: str) -> bool:
+        """Delete cached task progress"""
+        return await self.delete(f"task:progress:{task_id}")
     
     # ==================== Token Lock Operations ====================
     

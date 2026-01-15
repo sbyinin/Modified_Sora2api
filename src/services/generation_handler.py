@@ -19,6 +19,7 @@ from ..core.models import Task, RequestLog, CharacterOptions, Character
 from ..core.config import config
 from ..core.logger import debug_logger
 from ..core.http_utils import get_random_fingerprint
+from ..core.redis_manager import get_redis_manager
 
 
 @dataclass
@@ -26,19 +27,19 @@ class PollingConfig:
     """Configuration for adaptive polling intervals
     
     Attributes:
-        low_progress_interval: Polling interval when progress < 30% (default: 5.0s)
-        mid_progress_interval: Polling interval when 30% <= progress < 70% (default: 3.0s)
-        high_progress_interval: Polling interval when progress >= 70% (default: 2.0s)
-        stall_threshold: Number of consecutive polls with no progress change before stall detection (default: 3)
-        stall_multiplier: Multiplier applied to interval when stall is detected (default: 1.5)
-        max_interval: Maximum polling interval cap (default: 10.0s)
+        low_progress_interval: Polling interval when progress < 30% (default: 20.0s)
+        mid_progress_interval: Polling interval when 30% <= progress < 70% (default: 15.0s)
+        high_progress_interval: Polling interval when progress >= 70% (default: 10.0s)
+        stall_threshold: Number of consecutive polls with no progress change before stall detection (default: 2)
+        stall_multiplier: Multiplier applied to interval when stall is detected (default: 2.0)
+        max_interval: Maximum polling interval cap (default: 60.0s)
     """
-    low_progress_interval: float = 5.0   # progress < 30%
-    mid_progress_interval: float = 3.0   # 30% <= progress < 70%
-    high_progress_interval: float = 2.0  # progress >= 70%
-    stall_threshold: int = 3             # consecutive polls with no change
-    stall_multiplier: float = 1.5        # interval increase when stalled
-    max_interval: float = 10.0           # maximum polling interval
+    low_progress_interval: float = 20.0  # progress < 30%
+    mid_progress_interval: float = 15.0  # 30% <= progress < 70%
+    high_progress_interval: float = 10.0  # progress >= 70%
+    stall_threshold: int = 2             # consecutive polls with no change
+    stall_multiplier: float = 2.0        # interval increase when stalled
+    max_interval: float = 60.0           # maximum polling interval
 
 
 class AdaptivePoller:
@@ -50,10 +51,10 @@ class AdaptivePoller:
     
     Requirements:
     - 1.1: Use adaptive polling intervals based on task progress
-    - 1.2: Use 5s interval when progress < 30%
-    - 1.3: Use 3s interval when 30% <= progress < 70%
-    - 1.4: Use 2s interval when progress >= 70%
-    - 1.5: Increase interval by 50% when no progress for 3 consecutive polls
+    - 1.2: Use 20s interval when progress < 30%
+    - 1.3: Use 15s interval when 30% <= progress < 70%
+    - 1.4: Use 10s interval when progress >= 70%
+    - 1.5: Increase interval when no progress for 2 consecutive polls
     """
     
     def __init__(self, config: Optional[PollingConfig] = None):
@@ -77,9 +78,9 @@ class AdaptivePoller:
             Polling interval in seconds
             
         Requirements:
-        - 1.2: 5s when progress < 30%
-        - 1.3: 3s when 30% <= progress < 70%
-        - 1.4: 2s when progress >= 70%
+        - 1.2: 20s when progress < 30%
+        - 1.3: 15s when 30% <= progress < 70%
+        - 1.4: 10s when progress >= 70%
         """
         if progress < 30:
             base_interval = self.config.low_progress_interval
@@ -104,7 +105,7 @@ class AdaptivePoller:
             progress: Current task progress (0-100)
             
         Requirements:
-        - 1.5: Detect stall when no progress change for 3 consecutive polls
+        - 1.5: Detect stall when no progress change for 2 consecutive polls
         """
         if progress == self.last_progress:
             self.no_change_count += 1
@@ -815,10 +816,10 @@ class GenerationHandler:
             release_video_slot: If False, caller manages video concurrency slot release
             
         This method uses adaptive polling intervals based on task progress:
-        - 5s when progress < 30%
-        - 3s when 30% <= progress < 70%
-        - 2s when progress >= 70%
-        - Interval increases by 50% when no progress change for 3 consecutive polls
+        - 20s when progress < 30%
+        - 15s when 30% <= progress < 70%
+        - 10s when progress >= 70%
+        - Interval increases when no progress change for 2 consecutive polls
         
         Requirements: 1.1, 1.2, 1.3, 1.4, 1.5
         """
@@ -829,7 +830,9 @@ class GenerationHandler:
         # For image generation, we use a simpler approach since progress updates are less frequent
         adaptive_poller = AdaptivePoller() if is_video else None
         base_poll_interval = config.poll_interval  # Fallback for image generation
-        
+        redis_mgr = get_redis_manager()
+        db_update_threshold = 10  # Persist progress every 10%
+
         last_progress = 0
         last_db_progress = 0
         start_time = time.time()
@@ -873,6 +876,19 @@ class GenerationHandler:
                     debug_logger.log_info(f"Released concurrency slot for token {token_id} due to timeout")
 
                 await self.db.update_task(task_id, "failed", 0, error_message=f"Generation timeout after {elapsed_time:.1f} seconds")
+                try:
+                    cache_extra = {"token_id": token_id} if token_id is not None else {}
+                    cache_extra["error_message"] = f"Generation timeout after {elapsed_time:.1f} seconds"
+                    await redis_mgr.cache_task_progress(
+                        task_id,
+                        0,
+                        "failed",
+                        extra_data=cache_extra
+                    )
+                except Exception as cache_error:
+                    debug_logger.log_info(
+                        f"Failed to cache timeout for {task_id}: {cache_error}"
+                    )
                 await self.db.update_request_log_by_task_id(
                     task_id,
                     response_body=json.dumps({
@@ -917,17 +933,30 @@ class GenerationHandler:
 
                             status = task.get("status", "processing")
 
-                            if progress_pct != last_db_progress:
-                                last_db_progress = progress_pct
+                            try:
+                                cache_extra = {"token_id": token_id} if token_id is not None else {}
+                                await redis_mgr.cache_task_progress(
+                                    task_id,
+                                    progress_pct,
+                                    status,
+                                    extra_data=cache_extra
+                                )
+                            except Exception as cache_error:
+                                debug_logger.log_info(
+                                    f"Failed to cache task progress for {task_id}: {cache_error}"
+                                )
+
+                            if abs(progress_pct - last_db_progress) >= db_update_threshold:
                                 try:
                                     await self.db.update_task(task_id, "processing", progress_pct)
+                                    last_db_progress = progress_pct
                                 except Exception as update_error:
                                     debug_logger.log_info(
                                         f"Failed to update task progress for {task_id}: {update_error}"
                                     )
                             
                             # Record progress for adaptive polling (stall detection)
-                            # Requirements: 1.5 - detect stall when no progress for 3 consecutive polls
+                            # Requirements: 1.5 - detect stall when no progress for 2 consecutive polls
                             if adaptive_poller:
                                 adaptive_poller.record_progress(progress_pct)
 
@@ -986,6 +1015,19 @@ class GenerationHandler:
                                         status="processing",
                                         details={"permalink": permalink}
                                     )
+                                    try:
+                                        cache_extra = {"token_id": token_id} if token_id is not None else {}
+                                        cache_extra["permalink"] = permalink
+                                        await redis_mgr.cache_task_progress(
+                                            task_id,
+                                            last_progress,
+                                            "processing",
+                                            extra_data=cache_extra
+                                        )
+                                    except Exception as cache_error:
+                                        debug_logger.log_info(
+                                            f"Failed to cache permalink for {task_id}: {cache_error}"
+                                        )
 
                                 debug_logger.log_info(f"Found task {task_id} in drafts with kind: {kind}, reason_str: {reason_str}, has_url: {bool(url)}")
 
@@ -1007,6 +1049,19 @@ class GenerationHandler:
 
                                     # Update task status
                                     await self.db.update_task(task_id, "failed", 0, error_message=error_message)
+                                    try:
+                                        cache_extra = {"token_id": token_id} if token_id is not None else {}
+                                        cache_extra["error_message"] = error_message
+                                        await redis_mgr.cache_task_progress(
+                                            task_id,
+                                            0,
+                                            "failed",
+                                            extra_data=cache_extra
+                                        )
+                                    except Exception as cache_error:
+                                        debug_logger.log_info(
+                                            f"Failed to cache failed task for {task_id}: {cache_error}"
+                                        )
                                     await self.db.update_request_log_by_task_id(
                                         task_id,
                                         response_body=json.dumps({"error": error_message}),
@@ -1249,6 +1304,22 @@ class GenerationHandler:
                                     task_id, "completed", 100.0,
                                     result_urls=json.dumps([local_url])
                                 )
+                                try:
+                                    cache_extra = {"token_id": token_id} if token_id is not None else {}
+                                    if isinstance(permalink, str) and permalink:
+                                        cache_extra["permalink"] = permalink
+                                    if isinstance(local_url, str) and local_url:
+                                        cache_extra["result_url"] = local_url
+                                    await redis_mgr.cache_task_progress(
+                                        task_id,
+                                        100.0,
+                                        "completed",
+                                        extra_data=cache_extra
+                                    )
+                                except Exception as cache_error:
+                                    debug_logger.log_info(
+                                        f"Failed to cache completed task for {task_id}: {cache_error}"
+                                    )
                                 await self.db.update_request_log_by_task_id(
                                     task_id,
                                     response_body=json.dumps({"task_id": task_id, "status": "success"}),
@@ -1447,6 +1518,19 @@ class GenerationHandler:
             debug_logger.log_info(f"Released concurrency slot for token {token_id} due to unexpected loop exit")
 
         await self.db.update_task(task_id, "failed", 0, error_message=f"Generation timeout after {timeout} seconds")
+        try:
+            cache_extra = {"token_id": token_id} if token_id is not None else {}
+            cache_extra["error_message"] = f"Generation timeout after {timeout} seconds"
+            await redis_mgr.cache_task_progress(
+                task_id,
+                0,
+                "failed",
+                extra_data=cache_extra
+            )
+        except Exception as cache_error:
+            debug_logger.log_info(
+                f"Failed to cache timeout for {task_id}: {cache_error}"
+            )
         await self.db.update_request_log_by_task_id(
             task_id,
             response_body=json.dumps({

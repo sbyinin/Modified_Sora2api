@@ -3,12 +3,14 @@ from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from typing import Optional
 from pydantic import BaseModel
+import json
 import random
 import aiohttp
 import base64
 from ..core.auth import verify_api_key_header
 from ..services.token_manager import TokenManager
 from ..core.database import Database
+from ..core.redis_manager import get_redis_manager
 
 router = APIRouter()
 
@@ -591,22 +593,67 @@ async def get_task_progress(
     task_id: str,
     api_key: str = Depends(verify_api_key_header)
 ):
-    """Get video generation task progress by task ID
+    """Get generation task progress by task ID (cache -> DB -> API)
     
     Args:
         token_id: Token ID to use for query
         task_id: Task ID (e.g., task_01kcybbj56fp7vctvpmx0drrw1)
     
     Returns:
-        Task progress info:
+        Task progress info (best available):
         - id: task ID
-        - status: task status (running/completed/failed)
-        - prompt: generation prompt
-        - title: task title
+        - status: task status
         - progress_pct: progress percentage (0.0-1.0)
-        - generations: list of generated videos
+        - generations: optional list of outputs if available
     """
     try:
+        redis_mgr = get_redis_manager()
+        try:
+            cached = await redis_mgr.get_task_progress_cache(task_id)
+        except Exception:
+            cached = None
+        cached_token_id = cached.get("token_id") if cached else None
+        if cached_token_id is not None:
+            try:
+                cached_token_id = int(cached_token_id)
+            except (TypeError, ValueError):
+                cached_token_id = None
+
+        if cached and cached_token_id == token_id:
+            progress = cached.get("progress") or 0
+            task = {
+                "id": task_id,
+                "status": cached.get("status") or "processing",
+                "progress_pct": max(0.0, min(float(progress) / 100.0, 1.0))
+            }
+            if cached.get("permalink"):
+                task["permalink"] = cached.get("permalink")
+            if cached.get("result_url"):
+                task["generations"] = [{"url": cached.get("result_url")}]
+            return {
+                "success": True,
+                "task": task
+            }
+
+        task_data = await db.get_task(task_id)
+        if task_data and task_data.token_id == token_id:
+            task = {
+                "id": task_id,
+                "status": task_data.status,
+                "progress_pct": max(0.0, min(float(task_data.progress or 0) / 100.0, 1.0))
+            }
+            if task_data.result_urls:
+                try:
+                    urls = json.loads(task_data.result_urls)
+                    if isinstance(urls, list) and urls:
+                        task["generations"] = [{"url": url} for url in urls]
+                except json.JSONDecodeError:
+                    pass
+            return {
+                "success": True,
+                "task": task
+            }
+
         token_obj = await token_manager.get_token_by_id(token_id)
         if not token_obj:
             raise HTTPException(status_code=404, detail="Token not found")
