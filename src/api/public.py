@@ -696,24 +696,27 @@ async def get_sora_link(request: GetSoraLinkRequest):
     Returns:
         {"download_link": "..."} 或 {"error": "..."}
     """
-    from ..services.watermark_service import watermark_service
-    from ..core.config import config
-    
-    # 检查是否需要验证 token
-    api_key = config.api_key
-    if api_key:
-        if request.token != api_key:
-            return {"error": "无效或缺失的访问令牌"}
-    
-    if not request.url:
-        return {"error": "未提供 URL"}
-    
-    result = await watermark_service.get_download_link(request.url)
-    
-    if result["success"]:
-        return {"download_link": result["download_link"]}
-    else:
-        return {"error": result["error"]}
+    try:
+        from ..services.watermark_service import watermark_service
+        from ..core.config import config
+        
+        # 检查是否需要验证 token
+        api_key = config.api_key
+        if api_key:
+            if request.token != api_key:
+                return {"error": "无效或缺失的访问令牌"}
+        
+        if not request.url:
+            return {"error": "未提供 URL"}
+        
+        result = await watermark_service.get_download_link(request.url)
+        
+        if result["success"]:
+            return {"download_link": result["download_link"]}
+        else:
+            return {"error": result["error"]}
+    except Exception as e:
+        return {"error": f"服务异常: {str(e)}"}
 
 
 @router.post("/v1/watermark/remove")

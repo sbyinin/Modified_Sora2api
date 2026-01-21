@@ -2648,9 +2648,16 @@ class Database:
     async def get_enabled_watermark_accounts(self) -> List[Dict]:
         """获取所有启用的去水印账号"""
         async with self._connect(readonly=True) as db:
-            cursor = await db.execute(
-                "SELECT * FROM watermark_accounts WHERE enabled=1 ORDER BY last_used_at ASC NULLS FIRST"
-            )
+            # 使用兼容 SQLite 和 MySQL 的语法，NULL 值排在前面
+            if self.db_type == "mysql":
+                cursor = await db.execute(
+                    "SELECT * FROM watermark_accounts WHERE enabled=1 ORDER BY last_used_at IS NULL DESC, last_used_at ASC"
+                )
+            else:
+                # SQLite 3.30+ 支持 NULLS FIRST，但为了兼容性使用 CASE
+                cursor = await db.execute(
+                    "SELECT * FROM watermark_accounts WHERE enabled=1 ORDER BY CASE WHEN last_used_at IS NULL THEN 0 ELSE 1 END, last_used_at ASC"
+                )
             rows = await cursor.fetchall()
             return [dict(row) if isinstance(row, dict) else dict(zip(
                 ['id', 'name', 'access_token', 'refresh_token', 'client_id', 'enabled', 
