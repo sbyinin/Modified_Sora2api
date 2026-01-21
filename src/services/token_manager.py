@@ -627,7 +627,8 @@ class TokenManager:
         debug_logger.log_info(f"[ST_TO_AT] ST长度: {len(session_token)}, 前20字符: {session_token[:20]}...")
         
         # 检查是否使用 Lambda
-        if await self._should_use_lambda():
+        use_lambda = await self._should_use_lambda()
+        if use_lambda:
             debug_logger.log_info(f"[ST_TO_AT] 🚀 使用 Lambda 代理请求")
             try:
                 data = await self.lambda_manager.st_to_at(session_token)
@@ -647,8 +648,9 @@ class TokenManager:
                     "expires": expires
                 }
             except Exception as e:
-                debug_logger.log_info(f"[ST_TO_AT] ⚠️ Lambda 请求失败: {str(e)}，回退到直接请求")
-                # 回退到直接请求
+                debug_logger.log_info(f"[ST_TO_AT] ❌ Lambda 请求失败: {str(e)}")
+                # Lambda 启用时不回退到直接请求，直接抛出错误
+                raise Exception(f"Lambda ST转换失败: {str(e)}")
         
         # 直接请求
         proxy_url = await self.proxy_manager.get_proxy_url()
@@ -740,7 +742,8 @@ class TokenManager:
         debug_logger.log_info(f"[RT_TO_AT] 使用 Client ID: {effective_client_id[:20]}...")
         
         # 检查是否使用 Lambda
-        if await self._should_use_lambda():
+        use_lambda = await self._should_use_lambda()
+        if use_lambda:
             debug_logger.log_info(f"[RT_TO_AT] 🚀 使用 Lambda 代理请求")
             try:
                 data = await self.lambda_manager.rt_to_at(refresh_token, effective_client_id)
@@ -760,8 +763,9 @@ class TokenManager:
                     "expires_in": expires_in
                 }
             except Exception as e:
-                debug_logger.log_info(f"[RT_TO_AT] ⚠️ Lambda 请求失败: {str(e)}，回退到直接请求")
-                # 回退到直接请求
+                debug_logger.log_info(f"[RT_TO_AT] ❌ Lambda 请求失败: {str(e)}")
+                # Lambda 启用时不回退到直接请求，直接抛出错误
+                raise Exception(f"Lambda RT转换失败: {str(e)}")
         
         # 直接请求
         proxy_url = await self.proxy_manager.get_proxy_url()
