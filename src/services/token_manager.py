@@ -1365,6 +1365,87 @@ class TokenManager:
                 "message": str(e)
             }
 
+    async def test_token_with_sora2_update(self, token_id: int) -> dict:
+        """Test token validity and update Sora2 info (performance optimized)
+        
+        Returns same format as test_token_validity but with Sora2 info
+        """
+        # First do lightweight validity check
+        result = await self.test_token_validity(token_id)
+        
+        # If token is valid, update Sora2 info in background
+        if result["valid"]:
+            try:
+                token_data = await self.db.get_token(token_id)
+                if token_data:
+                    # Get Sora2 info with minimal delay
+                    await asyncio.sleep(0.2)  # Reduced delay
+                    
+                    # Get Sora2 invite code and remaining count in parallel
+                    sora2_task = asyncio.create_task(self.get_sora2_invite_code(token_data.token))
+                    remaining_task = None
+                    
+                    sora2_info = await sora2_task
+                    sora2_supported = sora2_info.get("supported", False)
+                    
+                    if sora2_supported:
+                        # Only get remaining count if Sora2 is supported
+                        remaining_task = asyncio.create_task(self.get_sora2_remaining_count(token_data.token))
+                    
+                    # Update basic Sora2 info
+                    await self.db.update_token_sora2(
+                        token_id,
+                        supported=sora2_supported,
+                        invite_code=sora2_info.get("invite_code"),
+                        redeemed_count=sora2_info.get("redeemed_count", 0),
+                        total_count=sora2_info.get("total_count", 0),
+                        remaining_count=0  # Will be updated below if available
+                    )
+                    
+                    # Update remaining count if we have the task
+                    sora2_remaining_count = 0
+                    if remaining_task:
+                        try:
+                            remaining_info = await remaining_task
+                            if remaining_info.get("success"):
+                                sora2_remaining_count = remaining_info.get("remaining_count", 0)
+                                await self.db.update_token_sora2_remaining(token_id, sora2_remaining_count)
+                        except Exception as e:
+                            print(f"Failed to get remaining count for token {token_id}: {e}")
+                    
+                    # Add Sora2 info to result
+                    result.update({
+                        "sora2_supported": sora2_supported,
+                        "sora2_remaining_count": sora2_remaining_count
+                    })
+                    
+            except Exception as e:
+                print(f"Failed to update Sora2 info for token {token_id}: {e}")
+                # Don't fail the whole operation, just log the error
+        
+        return result
+
+    async def batch_update_sora2_info_background(self, token_ids: List[int], max_concurrency: int = 3):
+        """Background task to update Sora2 info for multiple tokens
+        
+        This runs in the background without blocking the main operation
+        """
+        semaphore = asyncio.Semaphore(max_concurrency)
+        
+        async def update_single_token_sora2(token_id: int):
+            async with semaphore:
+                try:
+                    await asyncio.sleep(0.5)  # Rate limiting
+                    await self.test_token_with_sora2_update(token_id)
+                    print(f"✅ Updated Sora2 info for token {token_id}")
+                except Exception as e:
+                    print(f"❌ Failed to update Sora2 info for token {token_id}: {e}")
+        
+        # Execute all updates concurrently
+        tasks = [update_single_token_sora2(token_id) for token_id in token_ids]
+        await asyncio.gather(*tasks, return_exceptions=True)
+        print(f"🎉 Completed background Sora2 update for {len(token_ids)} tokens")
+
     async def batch_test_tokens(self, only_active: bool = True, only_disabled: bool = False, max_concurrency: int = 5) -> dict:
         """Batch test all tokens with concurrency control
 
@@ -1410,16 +1491,20 @@ class TokenManager:
                 # Add delay between tests to avoid rate limiting
                 await asyncio.sleep(0.3)
                 
-                test_result = await self.test_token_validity(token.id)
+                # Use performance-optimized method that updates Sora2 info for valid tokens only
+                test_result = await self.test_token_with_sora2_update(token.id)
 
                 result_item = {
                     "token_id": token.id,
                     "email": token.email,
                     "was_active": token.is_active,
                     "valid": test_result["valid"],
-                    "status_code": test_result["status_code"],
+                    "status_code": test_result.get("status_code", 200 if test_result["valid"] else 401),
                     "message": test_result["message"],
-                    "action": None
+                    "action": None,
+                    # Include Sora2 info in result if available
+                    "sora2_supported": test_result.get("sora2_supported"),
+                    "sora2_remaining_count": test_result.get("sora2_remaining_count")
                 }
 
                 async with results_lock:
@@ -1432,8 +1517,8 @@ class TokenManager:
                             auto_enabled_count += 1
                     else:
                         invalid_count += 1
-                        # If token is active and returns 401, disable it
-                        if token.is_active and test_result["status_code"] == 401:
+                        # If token is active and invalid, disable it
+                        if token.is_active:
                             await self.disable_token(token.id)
                             result_item["action"] = "auto_disabled"
                             auto_disabled_count += 1
@@ -1454,7 +1539,26 @@ class TokenManager:
             "results": results
         }
 
-    async def batch_add_tokens(self, tokens: List[dict], max_concurrency: int = 5) -> dict:
+    async def batch_update_sora2_info_background(self, token_ids: List[int], max_concurrency: int = 3):
+        """Background task to update Sora2 info for multiple tokens
+        
+        This runs in the background without blocking the main operation
+        """
+        semaphore = asyncio.Semaphore(max_concurrency)
+        
+        async def update_single_token_sora2(token_id: int):
+            async with semaphore:
+                try:
+                    await asyncio.sleep(0.5)  # Rate limiting
+                    await self.test_token_with_sora2_update(token_id)
+                    print(f"✅ Updated Sora2 info for token {token_id}")
+                except Exception as e:
+                    print(f"❌ Failed to update Sora2 info for token {token_id}: {e}")
+        
+        # Execute all updates concurrently
+        tasks = [update_single_token_sora2(token_id) for token_id in token_ids]
+        await asyncio.gather(*tasks, return_exceptions=True)
+        print(f"🎉 Completed background Sora2 update for {len(token_ids)} tokens")
         """Batch add multiple tokens with duplicate detection and concurrent validation
         
         Args:

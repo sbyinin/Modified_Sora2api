@@ -632,6 +632,10 @@ async def import_tokens(request: ImportTokensRequest, token: str = Depends(verif
                 )
                 # Update active status
                 await token_manager.update_token_status(existing_token.id, import_item.is_active)
+                
+                # Use lightweight Sora2 update for existing tokens (async, non-blocking)
+                asyncio.create_task(token_manager.test_token_with_sora2_update(existing_token.id))
+                
                 # Reset concurrency counters
                 if concurrency_manager:
                     await concurrency_manager.reset_token(
@@ -641,7 +645,7 @@ async def import_tokens(request: ImportTokensRequest, token: str = Depends(verif
                     )
                 updated_count += 1
             else:
-                # Add new token
+                # Add new token (this already includes Sora2 info fetching)
                 new_token = await token_manager.add_token(
                     token_value=import_item.access_token,
                     st=import_item.session_token,
@@ -668,7 +672,7 @@ async def import_tokens(request: ImportTokensRequest, token: str = Depends(verif
 
         return {
             "success": True,
-            "message": f"Import completed: {added_count} added, {updated_count} updated",
+            "message": f"Import completed: {added_count} added, {updated_count} updated (Sora2 info updating in background)",
             "added": added_count,
             "updated": updated_count
         }
