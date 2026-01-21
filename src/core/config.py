@@ -185,7 +185,7 @@ class Config:
     @property
     def watermark_free_parse_method(self) -> str:
         """Get watermark-free parse method"""
-        return self._config.get("watermark_free", {}).get("parse_method", "third_party")
+        return self._config.get("watermark_free", {}).get("parse_method", "builtin")
 
     @property
     def watermark_free_custom_url(self) -> str:

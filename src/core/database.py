@@ -478,14 +478,14 @@ class Database:
         if self._get_count_value(count) == 0:
             # Get watermark-free config from config_dict if provided, otherwise use defaults
             watermark_free_enabled = False
-            parse_method = "third_party"
+            parse_method = "builtin"
             custom_parse_url = None
             custom_parse_token = None
 
             if config_dict:
                 watermark_config = config_dict.get("watermark_free", {})
                 watermark_free_enabled = watermark_config.get("watermark_free_enabled", False)
-                parse_method = watermark_config.get("parse_method", "third_party")
+                parse_method = watermark_config.get("parse_method", "builtin")
                 custom_parse_url = watermark_config.get("custom_parse_url", "")
                 custom_parse_token = watermark_config.get("custom_parse_token", "")
 
@@ -2038,7 +2038,7 @@ class Database:
                 return WatermarkFreeConfig(**dict(row))
             # If no row exists, return a default config
             # This should not happen in normal operation as _ensure_config_rows should create it
-            return WatermarkFreeConfig(watermark_free_enabled=False, parse_method="third_party")
+            return WatermarkFreeConfig(watermark_free_enabled=False, parse_method="builtin")
 
     async def update_watermark_free_config(self, enabled: bool, parse_method: str = None,
                                           custom_parse_url: str = None, custom_parse_token: str = None):
@@ -2054,7 +2054,7 @@ class Database:
                 await db.execute("""
                     INSERT INTO watermark_free_config (id, watermark_free_enabled, parse_method, custom_parse_url, custom_parse_token)
                     VALUES (1, ?, ?, ?, ?)
-                """, (enabled, parse_method or "third_party", custom_parse_url, custom_parse_token))
+                """, (enabled, parse_method or "builtin", custom_parse_url, custom_parse_token))
             elif parse_method is None and custom_parse_url is None and custom_parse_token is None:
                 # Only update enabled status
                 await db.execute("""
@@ -2069,7 +2069,7 @@ class Database:
                     SET watermark_free_enabled = ?, parse_method = ?, custom_parse_url = ?,
                         custom_parse_token = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE id = 1
-                """, (enabled, parse_method or "third_party", custom_parse_url, custom_parse_token))
+                """, (enabled, parse_method or "builtin", custom_parse_url, custom_parse_token))
             await db.commit()
 
     # Cache config operations

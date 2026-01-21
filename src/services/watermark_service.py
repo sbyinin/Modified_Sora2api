@@ -157,6 +157,10 @@ class WatermarkService:
                 "error": "..."  # 失败时
             }
         """
+        # 检查去水印功能是否启用
+        if not config.watermark_free_enabled:
+            return {"success": False, "error": "去水印功能未启用"}
+        
         # 提取视频 ID
         if url_or_id.startswith('http') or 'sora.chatgpt.com' in url_or_id:
             video_id = self.extract_video_id(url_or_id)
@@ -165,6 +169,21 @@ class WatermarkService:
         else:
             video_id = url_or_id
         
+        # 根据解析方式选择处理逻辑
+        parse_method = config.watermark_free_parse_method
+        debug_logger.info(f"使用解析方式: {parse_method}")
+        
+        if parse_method == "builtin":
+            return await self._get_download_link_builtin(video_id)
+        elif parse_method == "third_party":
+            return {"success": False, "error": "第三方解析暂未实现，请使用内置解析"}
+        elif parse_method == "custom":
+            return await self._get_download_link_custom(video_id)
+        else:
+            return {"success": False, "error": f"不支持的解析方式: {parse_method}"}
+    
+    async def _get_download_link_builtin(self, video_id: str) -> Dict[str, Any]:
+        """内置解析方式"""
         # 获取账号
         account = await self.get_next_account()
         if not account:
@@ -178,7 +197,7 @@ class WatermarkService:
         
         for attempt in range(max_retries):
             try:
-                debug_logger.info(f"去水印尝试 {attempt + 1}/{max_retries}, 视频ID: {video_id}, 账号: {account['id']}")
+                debug_logger.info(f"内置解析尝试 {attempt + 1}/{max_retries}, 视频ID: {video_id}, 账号: {account['id']}")
                 
                 # 发起请求
                 if use_lambda:
@@ -193,13 +212,13 @@ class WatermarkService:
                 await self.db.update_watermark_account_usage(account['id'], success=True)
                 await self.db.add_watermark_log(account['id'], video_id, True, download_link=download_link)
                 
-                debug_logger.info(f"去水印成功，尝试次数: {attempt + 1}")
+                debug_logger.info(f"内置解析成功，尝试次数: {attempt + 1}")
                 return {"success": True, "download_link": download_link}
                 
             except Exception as e:
                 last_error = str(e)
                 error_str = str(e).lower()
-                debug_logger.warning(f"去水印失败 (尝试 {attempt + 1}): {last_error}")
+                debug_logger.warning(f"内置解析失败 (尝试 {attempt + 1}): {last_error}")
                 
                 # 检查是否是 401 错误，尝试刷新 token
                 if '401' in error_str and account.get('refresh_token'):
@@ -240,6 +259,61 @@ class WatermarkService:
         await self.db.add_watermark_log(account['id'], video_id, False, error_msg=last_error)
         
         return {"success": False, "error": last_error}
+    
+    async def _get_download_link_custom(self, video_id: str) -> Dict[str, Any]:
+        """自定义解析方式"""
+        custom_url = config.watermark_free_custom_url
+        custom_token = config.watermark_free_custom_token
+        
+        if not custom_url:
+            return {"success": False, "error": "自定义解析服务器地址未配置"}
+        
+        if not custom_token:
+            return {"success": False, "error": "自定义解析服务器访问密钥未配置"}
+        
+        try:
+            from curl_cffi.requests import AsyncSession
+            from ..core.http_utils import get_random_fingerprint
+            
+            # 构建请求URL
+            api_url = f"{custom_url.rstrip('/')}/parse"
+            
+            headers = {
+                'Authorization': f'Bearer {custom_token}',
+                'Content-Type': 'application/json',
+                'User-Agent': 'Sora2API/1.0'
+            }
+            
+            payload = {
+                'video_id': video_id,
+                'url': f'https://sora.chatgpt.com/p/{video_id}'
+            }
+            
+            debug_logger.info(f"自定义解析请求: {api_url}")
+            
+            async with AsyncSession() as session:
+                response = await session.post(
+                    api_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=30,
+                    impersonate=get_random_fingerprint()
+                )
+                response.raise_for_status()
+                data = response.json()
+            
+            if data.get('success') and data.get('download_link'):
+                debug_logger.info("自定义解析成功")
+                return {"success": True, "download_link": data['download_link']}
+            else:
+                error_msg = data.get('error', '自定义解析服务返回失败')
+                debug_logger.warning(f"自定义解析失败: {error_msg}")
+                return {"success": False, "error": error_msg}
+                
+        except Exception as e:
+            error_msg = f"自定义解析请求失败: {str(e)}"
+            debug_logger.error(error_msg)
+            return {"success": False, "error": error_msg}
 
 
 # 全局实例
