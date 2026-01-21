@@ -204,6 +204,8 @@ def build_openai_sentinel_token(flow, resp, pow_token, user_agent):
 
 def http_request(url, method="GET", payload=None, headers=None, timeout=20):
     """通用 HTTP 请求函数"""
+    import gzip
+    
     data = None
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
@@ -211,9 +213,31 @@ def http_request(url, method="GET", payload=None, headers=None, timeout=20):
     req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, resp.read().decode("utf-8"), dict(resp.headers)
+            body = resp.read()
+            resp_headers = dict(resp.headers)
+            
+            # 检查是否是 gzip 压缩的响应
+            content_encoding = resp_headers.get("Content-Encoding", "").lower()
+            if content_encoding == "gzip" or (body[:2] == b'\x1f\x8b'):
+                try:
+                    body = gzip.decompress(body)
+                except Exception:
+                    pass  # 如果解压失败，使用原始数据
+            
+            return resp.status, body.decode("utf-8"), resp_headers
     except urllib.error.HTTPError as e:
-        return e.code, e.read().decode("utf-8"), dict(e.headers) if hasattr(e, 'headers') else {}
+        body = e.read()
+        resp_headers = dict(e.headers) if hasattr(e, 'headers') else {}
+        
+        # 检查是否是 gzip 压缩的响应
+        content_encoding = resp_headers.get("Content-Encoding", "").lower()
+        if content_encoding == "gzip" or (body[:2] == b'\x1f\x8b'):
+            try:
+                body = gzip.decompress(body)
+            except Exception:
+                pass
+        
+        return e.code, body.decode("utf-8"), resp_headers
 
 
 def get_sentinel_token(token, user_agent, flow, sentinel_base):
