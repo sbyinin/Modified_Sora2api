@@ -932,6 +932,23 @@ class GenerationHandler:
                                 progress_pct = int(progress_pct * 100)
 
                             status = task.get("status", "processing")
+                            
+                            # Handle failed status from Sora API
+                            if status == "failed":
+                                error_msg = task.get("error_message", "Video generation failed")
+                                debug_logger.log_info(f"Task {task_id} failed: {error_msg}")
+                                await self.db.update_task(task_id, "failed", progress_pct, error_message=error_msg)
+                                await self.db.update_request_log_by_task_id(
+                                    task_id,
+                                    response_body=json.dumps({"error": error_msg}),
+                                    status_code=500,
+                                    duration=time.time() - start_time
+                                )
+                                # Release concurrency slot
+                                if token_id and self.concurrency_manager and release_video_slot:
+                                    await self.concurrency_manager.release_video(token_id)
+                                    debug_logger.log_info(f"Released concurrency slot for token {token_id} due to failed status")
+                                raise Exception(error_msg)
 
                             try:
                                 cache_extra = {"token_id": token_id} if token_id is not None else {}
