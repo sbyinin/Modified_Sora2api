@@ -1167,7 +1167,7 @@
 
     <!-- 添加去水印账号模态框 -->
     <div id="addWatermarkAccountModal" class="hidden fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
-        <div class="bg-background rounded-lg border border-border w-full max-w-md shadow-xl">
+        <div class="bg-background rounded-lg border border-border w-full max-w-lg shadow-xl">
             <div class="flex items-center justify-between p-5 border-b border-border">
                 <h3 class="text-lg font-semibold" id="wmAccountModalTitle">添加去水印账号</h3>
                 <button onclick="closeAddWatermarkAccountModal()" class="text-muted-foreground hover:text-foreground">
@@ -1177,7 +1177,7 @@
                     </svg>
                 </button>
             </div>
-            <div class="p-5 space-y-4">
+            <div class="p-5 space-y-4 max-h-[70vh] overflow-y-auto">
                 <input type="hidden" id="wmAccountEditId">
                 <div>
                     <label class="text-sm font-medium mb-2 block">账号名称</label>
@@ -1185,12 +1185,24 @@
                 </div>
                 <div>
                     <label class="text-sm font-medium mb-2 block">Access Token</label>
-                    <textarea id="wmAccountAccessToken" rows="3" class="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono resize-none" placeholder="Bearer eyJh..."></textarea>
+                    <textarea id="wmAccountAccessToken" rows="3" class="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono resize-none" placeholder="Bearer eyJh... 或使用下方 ST/RT 转换"></textarea>
                     <p class="text-xs text-muted-foreground mt-1">从浏览器开发者工具获取的 Authorization 头</p>
                 </div>
-                <div>
-                    <label class="text-sm font-medium mb-2 block">Refresh Token <span class="text-muted-foreground text-xs">- 可选</span></label>
-                    <textarea id="wmAccountRefreshToken" rows="2" class="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono resize-none" placeholder="用于自动刷新 Access Token"></textarea>
+                <div class="grid gap-4 sm:grid-cols-2">
+                    <div>
+                        <label class="text-sm font-medium mb-2 block">Session Token (ST) <span class="text-muted-foreground text-xs">- 可选</span></label>
+                        <div class="flex gap-2">
+                            <textarea id="wmAccountST" rows="2" class="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono resize-none" placeholder="输入 ST 后点击转换"></textarea>
+                            <button onclick="wmConvertST2AT()" class="inline-flex items-center justify-center rounded-md bg-blue-600 text-white hover:bg-blue-700 px-3 whitespace-nowrap h-9">ST→AT</button>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="text-sm font-medium mb-2 block">Refresh Token (RT) <span class="text-muted-foreground text-xs">- 可选</span></label>
+                        <div class="flex gap-2">
+                            <textarea id="wmAccountRefreshToken" rows="2" class="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono resize-none" placeholder="输入 RT 后点击转换"></textarea>
+                            <button onclick="wmConvertRT2AT()" class="inline-flex items-center justify-center rounded-md bg-green-600 text-white hover:bg-green-700 px-3 whitespace-nowrap h-9">RT→AT</button>
+                        </div>
+                    </div>
                 </div>
                 <div>
                     <label class="text-sm font-medium mb-2 block">Client ID <span class="text-muted-foreground text-xs">- 可选</span></label>
@@ -1278,9 +1290,11 @@
         loadWatermarkStats=async()=>{try{const r=await apiRequest('/api/watermark/stats');if(!r)return;const d=await r.json();$('wmStatActiveAccounts').textContent=d.active_accounts||0;$('wmStatTotal').textContent=d.total||0;$('wmStatSuccess').textContent=d.success||0;$('wmStatFailed').textContent=d.failed||0}catch(e){console.error('加载去水印统计失败:',e)}},
         refreshWatermarkAccounts=async()=>{try{const r=await apiRequest('/api/watermark/accounts');if(!r)return;const accounts=await r.json();const tb=$('wmAccountsTableBody');if(!accounts||accounts.length===0){tb.innerHTML='<tr><td colspan="4" class="py-8 text-center text-muted-foreground">暂无账号</td></tr>';return}tb.innerHTML=accounts.map(a=>`<tr><td class="py-2.5 px-3"><div class="font-medium">${a.name||'未命名'}</div><div class="text-xs text-muted-foreground font-mono">${a.access_token?a.access_token.substring(0,20)+'...':'-'}</div></td><td class="py-2.5 px-3"><span class="inline-flex items-center rounded px-2 py-0.5 text-xs ${a.enabled?'bg-green-50 text-green-700':'bg-red-50 text-red-700'}">${a.enabled?'启用':'禁用'}</span></td><td class="py-2.5 px-3 text-sm">${a.request_count||0} / ${a.error_count||0}</td><td class="py-2.5 px-3 text-right"><button onclick="editWatermarkAccount(${a.id})" class="inline-flex items-center justify-center rounded-md hover:bg-accent h-7 px-2 text-xs">编辑</button><button onclick="toggleWatermarkAccount(${a.id},${a.enabled})" class="inline-flex items-center justify-center rounded-md hover:bg-accent h-7 px-2 text-xs">${a.enabled?'禁用':'启用'}</button><button onclick="deleteWatermarkAccount(${a.id})" class="inline-flex items-center justify-center rounded-md hover:bg-destructive/10 hover:text-destructive h-7 px-2 text-xs">删除</button></td></tr>`).join('')}catch(e){console.error('加载去水印账号失败:',e)}},
         refreshWatermarkLogs=async()=>{try{const r=await apiRequest('/api/watermark/logs?limit=50');if(!r)return;const logs=await r.json();const tb=$('wmLogsTableBody');if(!logs||logs.length===0){tb.innerHTML='<tr><td colspan="4" class="py-8 text-center text-muted-foreground">暂无日志</td></tr>';return}tb.innerHTML=logs.map(l=>`<tr><td class="py-2.5 px-3 text-xs font-mono">${l.video_id||'-'}</td><td class="py-2.5 px-3 text-sm">${l.account_name||'-'}</td><td class="py-2.5 px-3"><span class="inline-flex items-center rounded px-2 py-0.5 text-xs ${l.success?'bg-green-50 text-green-700':'bg-red-50 text-red-700'}">${l.success?'成功':'失败'}</span>${l.error_msg?`<span class="text-xs text-muted-foreground ml-1">${l.error_msg}</span>`:''}</td><td class="py-2.5 px-3 text-xs text-muted-foreground">${l.created_at?new Date(l.created_at).toLocaleString('zh-CN'):'-'}</td></tr>`).join('')}catch(e){console.error('加载去水印日志失败:',e)}},
-        openAddWatermarkAccountModal=()=>{$('wmAccountModalTitle').textContent='添加去水印账号';$('wmAccountEditId').value='';$('wmAccountName').value='';$('wmAccountAccessToken').value='';$('wmAccountRefreshToken').value='';$('wmAccountClientId').value='';$('wmAccountSubmitBtnText').textContent='添加';$('addWatermarkAccountModal').classList.remove('hidden')},
+        openAddWatermarkAccountModal=()=>{$('wmAccountModalTitle').textContent='添加去水印账号';$('wmAccountEditId').value='';$('wmAccountName').value='';$('wmAccountAccessToken').value='';$('wmAccountST').value='';$('wmAccountRefreshToken').value='';$('wmAccountClientId').value='';$('wmAccountSubmitBtnText').textContent='添加';$('addWatermarkAccountModal').classList.remove('hidden')},
         closeAddWatermarkAccountModal=()=>{$('addWatermarkAccountModal').classList.add('hidden')},
-        editWatermarkAccount=async(id)=>{try{const r=await apiRequest(`/api/watermark/accounts/${id}`);if(!r)return;const a=await r.json();$('wmAccountModalTitle').textContent='编辑去水印账号';$('wmAccountEditId').value=id;$('wmAccountName').value=a.name||'';$('wmAccountAccessToken').value=a.access_token||'';$('wmAccountRefreshToken').value=a.refresh_token||'';$('wmAccountClientId').value=a.client_id||'';$('wmAccountSubmitBtnText').textContent='保存';$('addWatermarkAccountModal').classList.remove('hidden')}catch(e){showToast('加载账号失败: '+e.message,'error')}},
+        wmConvertST2AT=async()=>{const st=$('wmAccountST').value.trim();if(!st){showToast('请输入 Session Token','error');return}showToast('正在转换 ST...','info');try{const r=await apiRequest('/api/tokens/st2at',{method:'POST',body:JSON.stringify({st})});if(!r)return;const d=await r.json();if(d.success&&d.access_token){$('wmAccountAccessToken').value=d.access_token;showToast('ST 转换成功','success')}else{showToast('转换失败: '+(d.detail||d.message||'未知错误'),'error')}}catch(e){showToast('转换失败: '+e.message,'error')}},
+        wmConvertRT2AT=async()=>{const rt=$('wmAccountRefreshToken').value.trim();if(!rt){showToast('请输入 Refresh Token','error');return}showToast('正在转换 RT...','info');try{const r=await apiRequest('/api/tokens/rt2at',{method:'POST',body:JSON.stringify({rt})});if(!r)return;const d=await r.json();if(d.success&&d.access_token){$('wmAccountAccessToken').value=d.access_token;if(d.refresh_token){$('wmAccountRefreshToken').value=d.refresh_token}showToast('RT 转换成功','success')}else{showToast('转换失败: '+(d.detail||d.message||'未知错误'),'error')}}catch(e){showToast('转换失败: '+e.message,'error')}},
+        editWatermarkAccount=async(id)=>{try{const r=await apiRequest(`/api/watermark/accounts/${id}`);if(!r)return;const a=await r.json();$('wmAccountModalTitle').textContent='编辑去水印账号';$('wmAccountEditId').value=id;$('wmAccountName').value=a.name||'';$('wmAccountAccessToken').value=a.access_token||'';$('wmAccountST').value='';$('wmAccountRefreshToken').value=a.refresh_token||'';$('wmAccountClientId').value=a.client_id||'';$('wmAccountSubmitBtnText').textContent='保存';$('addWatermarkAccountModal').classList.remove('hidden')}catch(e){showToast('加载账号失败: '+e.message,'error')}},
         submitWatermarkAccount=async()=>{const id=$('wmAccountEditId').value;const data={name:$('wmAccountName').value.trim()||'未命名',access_token:$('wmAccountAccessToken').value.trim(),refresh_token:$('wmAccountRefreshToken').value.trim()||null,client_id:$('wmAccountClientId').value.trim()||null};if(!data.access_token){showToast('请输入 Access Token','error');return}try{const url=id?`/api/watermark/accounts/${id}`:'/api/watermark/accounts';const method=id?'PUT':'POST';const r=await apiRequest(url,{method,body:JSON.stringify(data)});if(!r)return;const d=await r.json();if(d.success){showToast(id?'账号更新成功':'账号添加成功','success');closeAddWatermarkAccountModal();refreshWatermarkAccounts();loadWatermarkStats()}else{showToast('操作失败: '+(d.detail||d.message||'未知错误'),'error')}}catch(e){showToast('操作失败: '+e.message,'error')}},
         toggleWatermarkAccount=async(id,enabled)=>{try{const r=await apiRequest(`/api/watermark/accounts/${id}`,{method:'PUT',body:JSON.stringify({enabled:!enabled})});if(!r)return;const d=await r.json();if(d.success){showToast(enabled?'账号已禁用':'账号已启用','success');refreshWatermarkAccounts();loadWatermarkStats()}else{showToast('操作失败','error')}}catch(e){showToast('操作失败: '+e.message,'error')}},
         deleteWatermarkAccount=async(id)=>{if(!confirm('确定要删除这个账号吗？'))return;try{const r=await apiRequest(`/api/watermark/accounts/${id}`,{method:'DELETE'});if(!r)return;const d=await r.json();if(d.success){showToast('账号已删除','success');refreshWatermarkAccounts();loadWatermarkStats()}else{showToast('删除失败','error')}}catch(e){showToast('删除失败: '+e.message,'error')}},
