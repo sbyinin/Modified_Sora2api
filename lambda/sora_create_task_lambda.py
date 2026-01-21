@@ -11,6 +11,8 @@
 - enhance_prompt: 增强提示词 (POST /editor/enhance_prompt)
 - post: 发布视频 (POST /project_y/post)
 - custom: 自定义请求 (任意 method + endpoint)
+- rt_to_at: Refresh Token 转 Access Token
+- st_to_at: Session Token 转 Access Token
 
 请求格式:
 {
@@ -24,6 +26,13 @@
     // custom 类型专用:
     "method": "GET",        // HTTP 方法
     "endpoint": "/me",      // API 端点
+    
+    // rt_to_at 类型专用:
+    "refresh_token": "...", // Refresh Token
+    "client_id": "...",     // 可选，Client ID
+    
+    // st_to_at 类型专用:
+    "session_token": "...", // Session Token
 }
 """
 import os
@@ -254,6 +263,56 @@ def build_sora_headers(token, user_agent, sentinel_token=None, content_type="app
     return headers
 
 
+def refresh_token_to_access_token(refresh_token, client_id=None):
+    """
+    Refresh Token 转 Access Token
+    
+    Args:
+        refresh_token: Refresh Token
+        client_id: Client ID (可选)
+    
+    Returns:
+        (status_code, response_body)
+    """
+    effective_client_id = client_id or "app_LlGpXReQgckcGGUo2JrYvtJK"
+    
+    url = "https://auth.openai.com/oauth/token"
+    payload = {
+        "client_id": effective_client_id,
+        "grant_type": "refresh_token",
+        "redirect_uri": "com.openai.chat://auth0.openai.com/ios/com.openai.chat/callback",
+        "refresh_token": refresh_token.strip()
+    }
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
+    
+    status, body, _ = http_request(url, "POST", payload, headers, timeout=30)
+    return status, body
+
+
+def session_token_to_access_token(session_token):
+    """
+    Session Token 转 Access Token
+    
+    Args:
+        session_token: Session Token (from cookie)
+    
+    Returns:
+        (status_code, response_body)
+    """
+    url = "https://chatgpt.com/api/auth/session"
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Cookie": f"__Secure-next-auth.session-token={session_token.strip()}"
+    }
+    
+    status, body, _ = http_request(url, "GET", None, headers, timeout=30)
+    return status, body
+
+
 def make_sora_request(token, method, endpoint, payload=None, user_agent=None, 
                       add_sentinel=False, flow=None, sora_base=None, sentinel_base=None):
     """
@@ -306,11 +365,6 @@ def lambda_handler(event, context):
         body = base64.b64decode(body).decode("utf-8")
     data = json.loads(body) if body else {}
 
-    # 获取必要参数
-    token = data.get("token")
-    if not token:
-        return {"statusCode": 400, "body": json.dumps({"error": "token required"})}
-
     # 获取 action，兼容旧格式
     action = data.get("action")
     if not action:
@@ -319,6 +373,40 @@ def lambda_handler(event, context):
             action = "nf_create"
         else:
             return {"statusCode": 400, "body": json.dumps({"error": "action required"})}
+
+    # 处理 rt_to_at (Refresh Token 转 Access Token)
+    if action == "rt_to_at":
+        refresh_token = data.get("refresh_token")
+        if not refresh_token:
+            return {"statusCode": 400, "body": json.dumps({"error": "refresh_token required"})}
+        
+        client_id = data.get("client_id")
+        status, resp_body = refresh_token_to_access_token(refresh_token, client_id)
+        
+        return {
+            "statusCode": status,
+            "headers": {"Content-Type": "application/json"},
+            "body": resp_body,
+        }
+
+    # 处理 st_to_at (Session Token 转 Access Token)
+    if action == "st_to_at":
+        session_token = data.get("session_token")
+        if not session_token:
+            return {"statusCode": 400, "body": json.dumps({"error": "session_token required"})}
+        
+        status, resp_body = session_token_to_access_token(session_token)
+        
+        return {
+            "statusCode": status,
+            "headers": {"Content-Type": "application/json"},
+            "body": resp_body,
+        }
+
+    # 其他 action 需要 token
+    token = data.get("token")
+    if not token:
+        return {"statusCode": 400, "body": json.dumps({"error": "token required"})}
 
     # 获取可选参数
     user_agent = data.get("user_agent") or SORA_APP_USER_AGENT

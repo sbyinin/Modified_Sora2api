@@ -309,6 +309,107 @@ class LambdaManager:
             return response.json()
         except Exception:
             raise Exception("Invalid JSON response")
+
+    async def rt_to_at(self, refresh_token: str, client_id: Optional[str] = None) -> Dict[str, Any]:
+        """通过 Lambda 将 Refresh Token 转换为 Access Token
+        
+        Args:
+            refresh_token: Refresh Token
+            client_id: Client ID (可选)
+            
+        Returns:
+            包含 access_token, refresh_token, expires_in 的响应
+            
+        Raises:
+            HTTPException: If all endpoints fail or Lambda is disabled
+        """
+        from fastapi import HTTPException
+        
+        if not await self.is_enabled():
+            raise HTTPException(status_code=400, detail="Lambda is not enabled")
+        
+        configs = await self._get_config()
+        endpoints = self._get_endpoints(configs)
+        if not endpoints:
+            raise HTTPException(status_code=400, detail="Lambda API key not configured")
+        
+        # 构建请求数据
+        request_data: Dict[str, Any] = {
+            "action": "rt_to_at",
+            "refresh_token": refresh_token,
+        }
+        if client_id:
+            request_data["client_id"] = client_id
+        
+        # Try each endpoint in round-robin order
+        last_error = None
+        for attempt in range(len(endpoints)):
+            ep = await self.get_next_endpoint()
+            if not ep:
+                continue
+            
+            try:
+                result = await self._post_request(ep["url"], ep["key"], request_data)
+                print(f"✅ [Lambda] RT to AT succeeded using {ep['url']}")
+                return result
+            except Exception as e:
+                last_error = e
+                print(f"⚠️ [Lambda] RT to AT failed using {ep['url']}: {str(e)}")
+                continue
+        
+        # All endpoints failed
+        error_msg = f"All Lambda endpoints failed. Last error: {str(last_error)}"
+        print(f"❌ [Lambda] {error_msg}")
+        raise HTTPException(status_code=502, detail=error_msg)
+
+    async def st_to_at(self, session_token: str) -> Dict[str, Any]:
+        """通过 Lambda 将 Session Token 转换为 Access Token
+        
+        Args:
+            session_token: Session Token
+            
+        Returns:
+            包含 accessToken 等信息的响应
+            
+        Raises:
+            HTTPException: If all endpoints fail or Lambda is disabled
+        """
+        from fastapi import HTTPException
+        
+        if not await self.is_enabled():
+            raise HTTPException(status_code=400, detail="Lambda is not enabled")
+        
+        configs = await self._get_config()
+        endpoints = self._get_endpoints(configs)
+        if not endpoints:
+            raise HTTPException(status_code=400, detail="Lambda API key not configured")
+        
+        # 构建请求数据
+        request_data: Dict[str, Any] = {
+            "action": "st_to_at",
+            "session_token": session_token,
+        }
+        
+        # Try each endpoint in round-robin order
+        last_error = None
+        for attempt in range(len(endpoints)):
+            ep = await self.get_next_endpoint()
+            if not ep:
+                continue
+            
+            try:
+                result = await self._post_request(ep["url"], ep["key"], request_data)
+                print(f"✅ [Lambda] ST to AT succeeded using {ep['url']}")
+                return result
+            except Exception as e:
+                last_error = e
+                print(f"⚠️ [Lambda] ST to AT failed using {ep['url']}: {str(e)}")
+                continue
+        
+        # All endpoints failed
+        error_msg = f"All Lambda endpoints failed. Last error: {str(last_error)}"
+        print(f"❌ [Lambda] {error_msg}")
+        raise HTTPException(status_code=502, detail=error_msg)
     
     def invalidate_cache(self):
         """Invalidate configuration cache"""

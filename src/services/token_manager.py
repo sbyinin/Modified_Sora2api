@@ -625,6 +625,32 @@ class TokenManager:
         
         debug_logger.log_info(f"[ST_TO_AT] 开始转换 Session Token 为 Access Token...")
         debug_logger.log_info(f"[ST_TO_AT] ST长度: {len(session_token)}, 前20字符: {session_token[:20]}...")
+        
+        # 检查是否使用 Lambda
+        if await self._should_use_lambda():
+            debug_logger.log_info(f"[ST_TO_AT] 🚀 使用 Lambda 代理请求")
+            try:
+                data = await self.lambda_manager.st_to_at(session_token)
+                
+                access_token = data.get("accessToken")
+                email = data.get("user", {}).get("email") if data.get("user") else None
+                expires = data.get("expires")
+                
+                if not access_token:
+                    debug_logger.log_info(f"[ST_TO_AT] ❌ Lambda 响应中缺少 accessToken 字段")
+                    raise ValueError("Missing accessToken in Lambda response")
+                
+                debug_logger.log_info(f"[ST_TO_AT] ✅ Lambda ST 转换成功")
+                return {
+                    "access_token": access_token,
+                    "email": email,
+                    "expires": expires
+                }
+            except Exception as e:
+                debug_logger.log_info(f"[ST_TO_AT] ⚠️ Lambda 请求失败: {str(e)}，回退到直接请求")
+                # 回退到直接请求
+        
+        # 直接请求
         proxy_url = await self.proxy_manager.get_proxy_url()
 
         async with AsyncSession() as session:
@@ -712,6 +738,32 @@ class TokenManager:
         debug_logger.log_info(f"[RT_TO_AT] 开始转换 Refresh Token 为 Access Token...")
         debug_logger.log_info(f"[RT_TO_AT] RT长度: {len(refresh_token)}, 前20字符: {refresh_token[:20]}...")
         debug_logger.log_info(f"[RT_TO_AT] 使用 Client ID: {effective_client_id[:20]}...")
+        
+        # 检查是否使用 Lambda
+        if await self._should_use_lambda():
+            debug_logger.log_info(f"[RT_TO_AT] 🚀 使用 Lambda 代理请求")
+            try:
+                data = await self.lambda_manager.rt_to_at(refresh_token, effective_client_id)
+                
+                access_token = data.get("access_token")
+                new_refresh_token = data.get("refresh_token")
+                expires_in = data.get("expires_in")
+                
+                if not access_token:
+                    debug_logger.log_info(f"[RT_TO_AT] ❌ Lambda 响应中缺少 access_token 字段")
+                    raise ValueError("Missing access_token in Lambda response")
+                
+                debug_logger.log_info(f"[RT_TO_AT] ✅ Lambda RT 转换成功")
+                return {
+                    "access_token": access_token,
+                    "refresh_token": new_refresh_token,
+                    "expires_in": expires_in
+                }
+            except Exception as e:
+                debug_logger.log_info(f"[RT_TO_AT] ⚠️ Lambda 请求失败: {str(e)}，回退到直接请求")
+                # 回退到直接请求
+        
+        # 直接请求
         proxy_url = await self.proxy_manager.get_proxy_url()
 
         async with AsyncSession() as session:
