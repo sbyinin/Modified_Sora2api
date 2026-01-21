@@ -157,8 +157,11 @@ class WatermarkService:
                 "error": "..."  # 失败时
             }
         """
+        # 从数据库获取去水印配置
+        watermark_config = await self.db.get_watermark_free_config()
+        
         # 检查去水印功能是否启用
-        if not config.watermark_free_enabled:
+        if not watermark_config.watermark_free_enabled:
             return {"success": False, "error": "去水印功能未启用"}
         
         # 提取视频 ID
@@ -170,7 +173,7 @@ class WatermarkService:
             video_id = url_or_id
         
         # 根据解析方式选择处理逻辑
-        parse_method = config.watermark_free_parse_method
+        parse_method = watermark_config.parse_method
         debug_logger.info(f"使用解析方式: {parse_method}")
         
         if parse_method == "builtin":
@@ -178,7 +181,7 @@ class WatermarkService:
         elif parse_method == "third_party":
             return {"success": False, "error": "第三方解析暂未实现，请使用内置解析"}
         elif parse_method == "custom":
-            return await self._get_download_link_custom(video_id)
+            return await self._get_download_link_custom(video_id, watermark_config)
         else:
             return {"success": False, "error": f"不支持的解析方式: {parse_method}"}
     
@@ -260,10 +263,10 @@ class WatermarkService:
         
         return {"success": False, "error": last_error}
     
-    async def _get_download_link_custom(self, video_id: str) -> Dict[str, Any]:
+    async def _get_download_link_custom(self, video_id: str, watermark_config) -> Dict[str, Any]:
         """自定义解析方式"""
-        custom_url = config.watermark_free_custom_url
-        custom_token = config.watermark_free_custom_token
+        custom_url = watermark_config.custom_parse_url
+        custom_token = watermark_config.custom_parse_token
         
         if not custom_url:
             return {"success": False, "error": "自定义解析服务器地址未配置"}
