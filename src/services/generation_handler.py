@@ -1150,47 +1150,82 @@ class GenerationHandler:
 
                                     # Get watermark-free config to determine parse method
                                     watermark_config = await self.db.get_watermark_free_config()
-                                    parse_method = watermark_config.parse_method or "third_party"
+                                    parse_method = watermark_config.parse_method or "builtin"
 
                                     # Post video to get watermark-free version
                                     try:
-                                        debug_logger.log_info(f"Calling post_video_for_watermark_free with generation_id={generation_id}, prompt={prompt[:50]}...")
-                                        post_id = await self.sora_client.post_video_for_watermark_free(
-                                            generation_id=generation_id,
-                                            prompt=prompt,
-                                            token=token
-                                        )
-                                        debug_logger.log_info(f"Received post_id: {post_id}")
-
-                                        if not post_id:
-                                            raise Exception("Failed to get post ID from publish API")
-
-                                        permalink = f"https://sora.chatgpt.com/p/{post_id}"
-
-                                        # Get watermark-free video URL based on parse method
-                                        if parse_method == "custom":
-                                            # Use custom parse server
-                                            if not watermark_config.custom_parse_url or not watermark_config.custom_parse_token:
-                                                raise Exception("Custom parse server URL or token not configured")
-
+                                        # Use builtin watermark service (uses dedicated watermark accounts + Lambda support)
+                                        if parse_method == "builtin":
+                                            debug_logger.log_info(f"Using builtin watermark service with generation_id={generation_id}")
+                                            
                                             if stream:
                                                 yield self._format_stream_chunk(
-                                                    reasoning_content=f"Video published successfully. Using custom parse server to get watermark-free URL...",
+                                                    reasoning_content="Using builtin watermark service to get watermark-free URL...",
                                                     stage="watermark_free",
                                                     status="processing",
-                                                    details={"permalink": permalink, "parse_method": "custom"}
+                                                    details={"parse_method": "builtin"}
                                                 )
-
-                                            debug_logger.log_info(f"Using custom parse server: {watermark_config.custom_parse_url}")
-                                            watermark_free_url = await self.sora_client.get_watermark_free_url_custom(
-                                                parse_url=watermark_config.custom_parse_url,
-                                                parse_token=watermark_config.custom_parse_token,
-                                                post_id=post_id
+                                            
+                                            # First publish the video to get post_id
+                                            post_id = await self.sora_client.post_video_for_watermark_free(
+                                                generation_id=generation_id,
+                                                prompt=prompt,
+                                                token=token
                                             )
+                                            debug_logger.log_info(f"Received post_id: {post_id}")
+                                            
+                                            if not post_id:
+                                                raise Exception("Failed to get post ID from publish API")
+                                            
+                                            permalink = f"https://sora.chatgpt.com/p/{post_id}"
+                                            
+                                            # Use watermark_service to get download link (supports Lambda)
+                                            from .watermark_service import watermark_service
+                                            result = await watermark_service.get_download_link(post_id)
+                                            
+                                            if not result["success"]:
+                                                raise Exception(f"Builtin watermark service failed: {result.get('error', 'Unknown error')}")
+                                            
+                                            watermark_free_url = result["download_link"]
+                                            debug_logger.log_info(f"Builtin watermark service returned URL: {watermark_free_url}")
                                         else:
-                                            # Use third-party parse (default)
-                                            watermark_free_url = f"https://oscdn2.dyysy.com/MP4/{post_id}.mp4"
-                                            debug_logger.log_info(f"Using third-party parse server")
+                                            debug_logger.log_info(f"Calling post_video_for_watermark_free with generation_id={generation_id}, prompt={prompt[:50]}...")
+                                            post_id = await self.sora_client.post_video_for_watermark_free(
+                                                generation_id=generation_id,
+                                                prompt=prompt,
+                                                token=token
+                                            )
+                                            debug_logger.log_info(f"Received post_id: {post_id}")
+
+                                            if not post_id:
+                                                raise Exception("Failed to get post ID from publish API")
+
+                                            permalink = f"https://sora.chatgpt.com/p/{post_id}"
+
+                                            # Get watermark-free video URL based on parse method
+                                            if parse_method == "custom":
+                                                # Use custom parse server
+                                                if not watermark_config.custom_parse_url or not watermark_config.custom_parse_token:
+                                                    raise Exception("Custom parse server URL or token not configured")
+
+                                                if stream:
+                                                    yield self._format_stream_chunk(
+                                                        reasoning_content=f"Video published successfully. Using custom parse server to get watermark-free URL...",
+                                                        stage="watermark_free",
+                                                        status="processing",
+                                                        details={"permalink": permalink, "parse_method": "custom"}
+                                                    )
+
+                                                debug_logger.log_info(f"Using custom parse server: {watermark_config.custom_parse_url}")
+                                                watermark_free_url = await self.sora_client.get_watermark_free_url_custom(
+                                                    parse_url=watermark_config.custom_parse_url,
+                                                    parse_token=watermark_config.custom_parse_token,
+                                                    post_id=post_id
+                                                )
+                                            else:
+                                                # Use third-party parse (default fallback)
+                                                watermark_free_url = f"https://oscdn2.dyysy.com/MP4/{post_id}.mp4"
+                                                debug_logger.log_info(f"Using third-party parse server")
 
                                         debug_logger.log_info(f"Watermark-free URL: {watermark_free_url}")
 

@@ -67,8 +67,8 @@ proxy_url = ""
 proxy_pool_enabled = false
 
 [watermark_free]
-watermark_free_enabled = false
-parse_method = "third_party"
+watermark_free_enabled = true
+parse_method = "builtin"
 custom_parse_url = ""
 custom_parse_token = ""
 

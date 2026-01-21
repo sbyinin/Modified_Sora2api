@@ -31,6 +31,7 @@ Authorization: Bearer your-api-key
 4. [图片生成接口](#4-图片生成接口)
 5. [角色创建接口](#5-角色创建接口)
 6. [公共数据接口](#6-公共数据接口)
+   - [去水印接口](#post-v1watermarkremove) ⭐ 新增
 7. [管理接口](#7-管理接口)
 
 ---
@@ -920,6 +921,86 @@ curl -X GET "http://your-server/v1/tokens/1/tasks/task_xxx" \
 ```bash
 curl -X GET "http://your-server/v1/tokens/1/profile-feed?limit=10" \
   -H "Authorization: Bearer your-api-key"
+```
+
+---
+
+### POST /v1/watermark/remove
+
+获取 Sora 视频无水印下载链接（需要 API Key 验证）。
+
+**请求参数 (JSON):**
+
+| 参数 | 类型 | 必填 | 描述 |
+|------|------|------|------|
+| `url` | string | 是 | Sora 分享链接（如 `https://sora.chatgpt.com/p/s_xxx`） |
+
+**请求示例:**
+```bash
+curl -X POST "http://your-server/v1/watermark/remove" \
+  -H "Authorization: Bearer your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://sora.chatgpt.com/p/s_690ce161c2488191a3476e9969911522"
+  }'
+```
+
+**响应示例（成功）:**
+```json
+{
+  "success": true,
+  "download_link": "https://videos.openai.com/vg-assets/..."
+}
+```
+
+**响应示例（失败）:**
+```json
+{
+  "success": false,
+  "error": "没有可用的去水印账号"
+}
+```
+
+**注意事项:**
+- 需要在管理后台的"去水印账号"中添加账号才能使用
+- 支持 Lambda 代理（如果启用了 Lambda）
+- 使用内置解析时，会自动使用独立的去水印账号池
+
+---
+
+### POST /get-sora-link
+
+获取 Sora 视频无水印下载链接（兼容 SoraRtTool 格式）。
+
+**请求参数 (JSON):**
+
+| 参数 | 类型 | 必填 | 描述 |
+|------|------|------|------|
+| `url` | string | 是 | Sora 分享链接 |
+| `token` | string | 否 | API Key（如果配置了验证） |
+
+**请求示例:**
+```bash
+curl -X POST "http://your-server/get-sora-link" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://sora.chatgpt.com/p/s_xxx",
+    "token": "your-api-key"
+  }'
+```
+
+**响应示例（成功）:**
+```json
+{
+  "download_link": "https://videos.openai.com/vg-assets/..."
+}
+```
+
+**响应示例（失败）:**
+```json
+{
+  "error": "无效或缺失的访问令牌"
+}
 ```
 
 ---
