@@ -631,7 +631,8 @@ class TokenManager:
         if use_lambda:
             debug_logger.log_info(f"[ST_TO_AT] 🚀 使用 Lambda 代理请求")
             try:
-                data = await self.lambda_manager.st_to_at(session_token)
+                lambda_mgr = await self._get_lambda_manager()
+                data = await lambda_mgr.st_to_at(session_token)
                 
                 access_token = data.get("accessToken")
                 email = data.get("user", {}).get("email") if data.get("user") else None
@@ -746,7 +747,8 @@ class TokenManager:
         if use_lambda:
             debug_logger.log_info(f"[RT_TO_AT] 🚀 使用 Lambda 代理请求")
             try:
-                data = await self.lambda_manager.rt_to_at(refresh_token, effective_client_id)
+                lambda_mgr = await self._get_lambda_manager()
+                data = await lambda_mgr.rt_to_at(refresh_token, effective_client_id)
                 
                 access_token = data.get("access_token")
                 new_refresh_token = data.get("refresh_token")
