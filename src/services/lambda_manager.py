@@ -1,6 +1,7 @@
 """Lambda URL polling manager
 
 Manages round-robin polling of multiple Lambda endpoints for video generation.
+Provides a generic interface for all Sora API requests via Lambda.
 """
 import asyncio
 import httpx
@@ -188,6 +189,126 @@ class LambdaManager:
             raise Exception("No task ID in response")
         
         return task_id
+
+    async def make_request(
+        self,
+        token: str,
+        action: str,
+        payload: Optional[Dict[str, Any]] = None,
+        method: Optional[str] = None,
+        endpoint: Optional[str] = None,
+        add_sentinel: Optional[bool] = None,
+        flow: Optional[str] = None,
+        user_agent: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """通用 Lambda 请求方法
+        
+        通过 Lambda 代理发起任意 Sora API 请求
+        
+        Args:
+            token: Access token
+            action: 请求类型 (nf_create, pending, me, custom 等)
+            payload: 请求体 (POST 请求)
+            method: HTTP 方法 (仅 custom action 需要)
+            endpoint: API 端点 (仅 custom action 需要)
+            add_sentinel: 是否添加 sentinel token
+            flow: sentinel flow 类型
+            user_agent: 自定义 UA
+            
+        Returns:
+            API 响应 (已解析的 JSON)
+            
+        Raises:
+            HTTPException: If all endpoints fail or Lambda is disabled
+        """
+        from fastapi import HTTPException
+        
+        if not await self.is_enabled():
+            raise HTTPException(status_code=400, detail="Lambda is not enabled")
+        
+        configs = await self._get_config()
+        endpoints = self._get_endpoints(configs)
+        if not endpoints:
+            raise HTTPException(status_code=400, detail="Lambda API key not configured")
+        
+        # 构建请求数据
+        request_data: Dict[str, Any] = {
+            "token": token,
+            "action": action,
+        }
+        
+        if payload is not None:
+            request_data["payload"] = payload
+        if method is not None:
+            request_data["method"] = method
+        if endpoint is not None:
+            request_data["endpoint"] = endpoint
+        if add_sentinel is not None:
+            request_data["add_sentinel"] = add_sentinel
+        if flow is not None:
+            request_data["flow"] = flow
+        if user_agent is not None:
+            request_data["user_agent"] = user_agent
+        
+        # Try each endpoint in round-robin order
+        last_error = None
+        for attempt in range(len(endpoints)):
+            ep = await self.get_next_endpoint()
+            if not ep:
+                continue
+            
+            try:
+                result = await self._post_request(ep["url"], ep["key"], request_data)
+                print(f"✅ [Lambda] Request '{action}' succeeded using {ep['url']}")
+                return result
+            except Exception as e:
+                last_error = e
+                print(f"⚠️ [Lambda] Request '{action}' failed using {ep['url']}: {str(e)}")
+                continue
+        
+        # All endpoints failed
+        error_msg = f"All Lambda endpoints failed. Last error: {str(last_error)}"
+        print(f"❌ [Lambda] {error_msg}")
+        raise HTTPException(status_code=502, detail=error_msg)
+
+    async def _post_request(
+        self,
+        lambda_url: str,
+        api_key: str,
+        request_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """发送请求到 Lambda 端点
+        
+        Args:
+            lambda_url: Lambda endpoint URL
+            api_key: Lambda API key
+            request_data: 请求数据
+            
+        Returns:
+            解析后的 JSON 响应
+            
+        Raises:
+            Exception: If request fails or response is invalid
+        """
+        headers = {
+            "Content-Type": "application/json",
+            "x-lambda-key": api_key
+        }
+        
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                lambda_url,
+                json=request_data,
+                headers=headers
+            )
+        
+        if response.status_code != 200:
+            raise Exception(f"HTTP {response.status_code}: {response.text}")
+        
+        try:
+            return response.json()
+        except Exception:
+            raise Exception("Invalid JSON response")
     
     def invalidate_cache(self):
         """Invalidate configuration cache"""

@@ -1056,6 +1056,37 @@ class Database:
                 )
             """)
 
+            # Watermark accounts table (去水印账号池)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS watermark_accounts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT DEFAULT '未命名',
+                    access_token TEXT,
+                    refresh_token TEXT,
+                    client_id TEXT DEFAULT 'app_OHnYmJt5u1XEdhDUx0ig1ziv',
+                    enabled INTEGER DEFAULT 1,
+                    last_used_at TIMESTAMP,
+                    request_count INTEGER DEFAULT 0,
+                    error_count INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Watermark logs table (去水印请求日志)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS watermark_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id INTEGER,
+                    video_id TEXT NOT NULL,
+                    success INTEGER DEFAULT 0,
+                    download_link TEXT,
+                    error_msg TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (account_id) REFERENCES watermark_accounts(id)
+                )
+            """)
+
             # Create indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_task_id ON tasks(task_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_task_status ON tasks(status)")
@@ -1066,6 +1097,9 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_video_record_task_id ON video_records(task_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_video_record_status ON video_records(status)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_upload_log_video_record_id ON upload_logs(video_record_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_watermark_account_enabled ON watermark_accounts(enabled)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_watermark_log_account_id ON watermark_logs(account_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_watermark_log_created_at ON watermark_logs(created_at)")
             await self._ensure_request_logs_indexes(db)
 
             # Migration: Add daily statistics columns if they don't exist
@@ -2598,3 +2632,139 @@ class Database:
         async with self._connect() as db:
             await db.execute("DELETE FROM upload_logs")
             await db.commit()
+
+    # ========== 去水印账号管理 ==========
+
+    async def get_all_watermark_accounts(self) -> List[Dict]:
+        """获取所有去水印账号"""
+        async with self._connect(readonly=True) as db:
+            cursor = await db.execute("SELECT * FROM watermark_accounts ORDER BY id")
+            rows = await cursor.fetchall()
+            return [dict(row) if isinstance(row, dict) else dict(zip(
+                ['id', 'name', 'access_token', 'refresh_token', 'client_id', 'enabled', 
+                 'last_used_at', 'request_count', 'error_count', 'created_at', 'updated_at'], row
+            )) for row in rows]
+
+    async def get_enabled_watermark_accounts(self) -> List[Dict]:
+        """获取所有启用的去水印账号"""
+        async with self._connect(readonly=True) as db:
+            cursor = await db.execute(
+                "SELECT * FROM watermark_accounts WHERE enabled=1 ORDER BY last_used_at ASC NULLS FIRST"
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) if isinstance(row, dict) else dict(zip(
+                ['id', 'name', 'access_token', 'refresh_token', 'client_id', 'enabled', 
+                 'last_used_at', 'request_count', 'error_count', 'created_at', 'updated_at'], row
+            )) for row in rows]
+
+    async def get_watermark_account_by_id(self, account_id: int) -> Optional[Dict]:
+        """根据ID获取去水印账号"""
+        async with self._connect(readonly=True) as db:
+            cursor = await db.execute("SELECT * FROM watermark_accounts WHERE id=?", (account_id,))
+            row = await cursor.fetchone()
+            if row:
+                return dict(row) if isinstance(row, dict) else dict(zip(
+                    ['id', 'name', 'access_token', 'refresh_token', 'client_id', 'enabled', 
+                     'last_used_at', 'request_count', 'error_count', 'created_at', 'updated_at'], row
+                ))
+            return None
+
+    async def add_watermark_account(self, name: str, access_token: str = None, 
+                                    refresh_token: str = None, client_id: str = None) -> int:
+        """添加去水印账号"""
+        async with self._connect() as db:
+            cursor = await db.execute("""
+                INSERT INTO watermark_accounts (name, access_token, refresh_token, client_id)
+                VALUES (?, ?, ?, ?)
+            """, (name, access_token, refresh_token, client_id or 'app_OHnYmJt5u1XEdhDUx0ig1ziv'))
+            await db.commit()
+            return cursor.lastrowid
+
+    async def update_watermark_account(self, account_id: int, **kwargs):
+        """更新去水印账号"""
+        async with self._connect() as db:
+            fields = []
+            values = []
+            for k, v in kwargs.items():
+                if k in ['name', 'access_token', 'refresh_token', 'client_id', 'enabled']:
+                    fields.append(f'{k}=?')
+                    values.append(v)
+            if fields:
+                fields.append('updated_at=CURRENT_TIMESTAMP')
+                values.append(account_id)
+                await db.execute(f"UPDATE watermark_accounts SET {','.join(fields)} WHERE id=?", values)
+                await db.commit()
+
+    async def delete_watermark_account(self, account_id: int):
+        """删除去水印账号"""
+        async with self._connect() as db:
+            await db.execute("DELETE FROM watermark_accounts WHERE id=?", (account_id,))
+            await db.commit()
+
+    async def update_watermark_account_usage(self, account_id: int, success: bool = True,
+                                             new_access_token: str = None, new_refresh_token: str = None):
+        """更新去水印账号使用统计"""
+        async with self._connect() as db:
+            if success:
+                await db.execute(
+                    "UPDATE watermark_accounts SET last_used_at=CURRENT_TIMESTAMP, request_count=request_count+1 WHERE id=?",
+                    (account_id,)
+                )
+            else:
+                await db.execute(
+                    "UPDATE watermark_accounts SET last_used_at=CURRENT_TIMESTAMP, error_count=error_count+1 WHERE id=?",
+                    (account_id,)
+                )
+            
+            if new_access_token and new_refresh_token:
+                await db.execute(
+                    "UPDATE watermark_accounts SET access_token=?, refresh_token=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (new_access_token, new_refresh_token, account_id)
+                )
+            await db.commit()
+
+    # ========== 去水印日志管理 ==========
+
+    async def add_watermark_log(self, account_id: int, video_id: str, success: bool,
+                                download_link: str = None, error_msg: str = None) -> int:
+        """添加去水印日志"""
+        async with self._connect() as db:
+            cursor = await db.execute("""
+                INSERT INTO watermark_logs (account_id, video_id, success, download_link, error_msg)
+                VALUES (?, ?, ?, ?, ?)
+            """, (account_id, video_id, 1 if success else 0, download_link, error_msg))
+            await db.commit()
+            return cursor.lastrowid
+
+    async def get_watermark_logs(self, limit: int = 100) -> List[Dict]:
+        """获取去水印日志"""
+        async with self._connect(readonly=True) as db:
+            cursor = await db.execute("""
+                SELECT l.*, a.name as account_name
+                FROM watermark_logs l
+                LEFT JOIN watermark_accounts a ON l.account_id = a.id
+                ORDER BY l.created_at DESC LIMIT ?
+            """, (limit,))
+            rows = await cursor.fetchall()
+            return [dict(row) if isinstance(row, dict) else dict(zip(
+                ['id', 'account_id', 'video_id', 'success', 'download_link', 'error_msg', 'created_at', 'account_name'], row
+            )) for row in rows]
+
+    async def get_watermark_stats(self) -> Dict:
+        """获取去水印统计"""
+        async with self._connect(readonly=True) as db:
+            cursor = await db.execute("SELECT COUNT(*) FROM watermark_logs")
+            total = self._get_count_value(await cursor.fetchone())
+            
+            cursor = await db.execute("SELECT COUNT(*) FROM watermark_logs WHERE success=1")
+            success = self._get_count_value(await cursor.fetchone())
+            
+            cursor = await db.execute("SELECT COUNT(*) FROM watermark_accounts WHERE enabled=1")
+            active_accounts = self._get_count_value(await cursor.fetchone())
+            
+            return {
+                'total': total,
+                'success': success,
+                'failed': total - success,
+                'active_accounts': active_accounts
+            }

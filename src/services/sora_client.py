@@ -38,6 +38,51 @@ class SoraClient:
         self.base_url = config.sora_base_url  # 从配置读取基础URL
         # 持久化 session 字典，按 token 分组维护 (session, fingerprint)
         self._sessions: Dict[str, Tuple[AsyncSession, str]] = {}
+        # Lambda manager (lazy loaded)
+        self._lambda_manager = None
+
+    async def _get_lambda_manager(self):
+        """获取 Lambda manager 实例"""
+        if self._lambda_manager is None:
+            from .lambda_manager import lambda_manager
+            self._lambda_manager = lambda_manager
+        return self._lambda_manager
+
+    async def _should_use_lambda(self) -> bool:
+        """判断是否应该使用 Lambda 代理"""
+        lambda_mgr = await self._get_lambda_manager()
+        return await lambda_mgr.is_enabled()
+
+    async def _make_lambda_request(
+        self,
+        method: str,
+        endpoint: str,
+        token: str,
+        json_data: Optional[Dict] = None,
+        add_sentinel_token: bool = False
+    ) -> Dict[str, Any]:
+        """通过 Lambda 代理发起请求
+        
+        Args:
+            method: HTTP 方法 (GET/POST)
+            endpoint: API 端点
+            token: Access token
+            json_data: JSON 请求体
+            add_sentinel_token: 是否添加 sentinel token
+            
+        Returns:
+            API 响应
+        """
+        lambda_mgr = await self._get_lambda_manager()
+        
+        return await lambda_mgr.make_request(
+            token=token,
+            action="custom",
+            method=method,
+            endpoint=endpoint,
+            payload=json_data,
+            add_sentinel=add_sentinel_token
+        )
 
     async def _generate_sentinel_token(
         self,
@@ -177,7 +222,8 @@ class SoraClient:
                            multipart: Optional[Dict] = None,
                            add_sentinel_token: bool = False,
                            max_retries: int = 3,
-                           token_id: Optional[int] = None) -> Dict[str, Any]:
+                           token_id: Optional[int] = None,
+                           use_lambda: Optional[bool] = None) -> Dict[str, Any]:
         """Make HTTP request with proxy support and 429 retry
 
         Args:
@@ -189,8 +235,28 @@ class SoraClient:
             add_sentinel_token: Whether to add openai-sentinel-token header (only for generation requests)
             max_retries: Maximum number of retries for 429/CF errors
             token_id: Token ID for getting token-specific proxy (optional)
+            use_lambda: Force use/not use Lambda (None = auto detect)
         """
         import asyncio
+        
+        # 判断是否使用 Lambda 代理
+        # multipart 请求不支持 Lambda（文件上传）
+        if use_lambda is None and multipart is None:
+            use_lambda = await self._should_use_lambda()
+        
+        # 使用 Lambda 代理发起请求
+        if use_lambda and multipart is None:
+            try:
+                return await self._make_lambda_request(
+                    method=method,
+                    endpoint=endpoint,
+                    token=token,
+                    json_data=json_data,
+                    add_sentinel_token=add_sentinel_token
+                )
+            except Exception as e:
+                print(f"⚠️ [SoraClient] Lambda request failed, falling back to direct: {e}")
+                # Lambda 失败时回退到直接请求
         
         proxy_url = await self.proxy_manager.get_proxy_url(token_id)
         cf_state = get_cloudflare_state(token_id=token_id, token=token)

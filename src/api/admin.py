@@ -1731,3 +1731,143 @@ async def test_single_proxy(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to test proxy: {str(e)}")
+
+
+# ========== 去水印账号管理 API ==========
+
+class AddWatermarkAccountRequest(BaseModel):
+    name: str = "未命名"
+    access_token: Optional[str] = None
+    refresh_token: Optional[str] = None
+    client_id: Optional[str] = None
+
+
+class UpdateWatermarkAccountRequest(BaseModel):
+    name: Optional[str] = None
+    access_token: Optional[str] = None
+    refresh_token: Optional[str] = None
+    client_id: Optional[str] = None
+    enabled: Optional[bool] = None
+
+
+class GetWatermarkLinkRequest(BaseModel):
+    url: str
+
+
+@router.get("/api/watermark/accounts")
+async def get_watermark_accounts(token: str = Depends(verify_admin_token)):
+    """获取所有去水印账号"""
+    try:
+        accounts = await db.get_all_watermark_accounts()
+        return accounts
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取账号失败: {str(e)}")
+
+
+@router.get("/api/watermark/accounts/{account_id}")
+async def get_watermark_account(account_id: int, token: str = Depends(verify_admin_token)):
+    """获取单个去水印账号"""
+    try:
+        account = await db.get_watermark_account_by_id(account_id)
+        if not account:
+            raise HTTPException(status_code=404, detail="账号不存在")
+        return account
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取账号失败: {str(e)}")
+
+
+@router.post("/api/watermark/accounts")
+async def add_watermark_account(
+    request: AddWatermarkAccountRequest,
+    token: str = Depends(verify_admin_token)
+):
+    """添加去水印账号"""
+    try:
+        account_id = await db.add_watermark_account(
+            name=request.name,
+            access_token=request.access_token,
+            refresh_token=request.refresh_token,
+            client_id=request.client_id
+        )
+        # 清除缓存
+        from ..services.watermark_service import watermark_service
+        watermark_service.invalidate_cache()
+        
+        return {"success": True, "id": account_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"添加账号失败: {str(e)}")
+
+
+@router.put("/api/watermark/accounts/{account_id}")
+async def update_watermark_account(
+    account_id: int,
+    request: UpdateWatermarkAccountRequest,
+    token: str = Depends(verify_admin_token)
+):
+    """更新去水印账号"""
+    try:
+        update_data = {k: v for k, v in request.dict().items() if v is not None}
+        await db.update_watermark_account(account_id, **update_data)
+        
+        # 清除缓存
+        from ..services.watermark_service import watermark_service
+        watermark_service.invalidate_cache()
+        
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"更新账号失败: {str(e)}")
+
+
+@router.delete("/api/watermark/accounts/{account_id}")
+async def delete_watermark_account(account_id: int, token: str = Depends(verify_admin_token)):
+    """删除去水印账号"""
+    try:
+        await db.delete_watermark_account(account_id)
+        
+        # 清除缓存
+        from ..services.watermark_service import watermark_service
+        watermark_service.invalidate_cache()
+        
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"删除账号失败: {str(e)}")
+
+
+@router.get("/api/watermark/logs")
+async def get_watermark_logs(limit: int = 100, token: str = Depends(verify_admin_token)):
+    """获取去水印日志"""
+    try:
+        logs = await db.get_watermark_logs(limit)
+        return logs
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取日志失败: {str(e)}")
+
+
+@router.get("/api/watermark/stats")
+async def get_watermark_stats(token: str = Depends(verify_admin_token)):
+    """获取去水印统计"""
+    try:
+        stats = await db.get_watermark_stats()
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取统计失败: {str(e)}")
+
+
+@router.post("/api/watermark/get-link")
+async def get_watermark_free_link(
+    request: GetWatermarkLinkRequest,
+    token: str = Depends(verify_admin_token)
+):
+    """获取无水印下载链接（管理后台使用）"""
+    try:
+        from ..services.watermark_service import watermark_service
+        result = await watermark_service.get_download_link(request.url)
+        
+        if result["success"]:
+            return {"success": True, "download_link": result["download_link"]}
+        else:
+            return {"success": False, "error": result["error"]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取下载链接失败: {str(e)}")

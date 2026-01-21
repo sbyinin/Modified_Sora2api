@@ -673,3 +673,75 @@ async def get_task_progress(
         raise HTTPException(status_code=500, detail=f"Failed to get task progress: {str(e)}")
 
 
+
+# ============================================================
+# 去水印 API Endpoints
+# ============================================================
+
+class GetSoraLinkRequest(BaseModel):
+    url: str
+    token: Optional[str] = None  # 可选的访问令牌
+
+
+@router.post("/get-sora-link")
+async def get_sora_link(request: GetSoraLinkRequest):
+    """获取 Sora 视频无水印下载链接
+    
+    兼容 SoraRtTool 的 API 格式
+    
+    Args:
+        url: Sora 分享链接 (如 https://sora.chatgpt.com/p/s_xxx)
+        token: 可选的访问令牌（如果配置了 API Token 验证）
+    
+    Returns:
+        {"download_link": "..."} 或 {"error": "..."}
+    """
+    from ..services.watermark_service import watermark_service
+    from ..core.config import config
+    
+    # 检查是否需要验证 token
+    api_key = config.api_key
+    if api_key:
+        if request.token != api_key:
+            return {"error": "无效或缺失的访问令牌"}
+    
+    if not request.url:
+        return {"error": "未提供 URL"}
+    
+    result = await watermark_service.get_download_link(request.url)
+    
+    if result["success"]:
+        return {"download_link": result["download_link"]}
+    else:
+        return {"error": result["error"]}
+
+
+@router.post("/v1/watermark/remove")
+async def remove_watermark(
+    request: GetSoraLinkRequest,
+    api_key: str = Depends(verify_api_key_header)
+):
+    """获取 Sora 视频无水印下载链接（需要 API Key 验证）
+    
+    Args:
+        url: Sora 分享链接 (如 https://sora.chatgpt.com/p/s_xxx)
+    
+    Returns:
+        {
+            "success": true,
+            "download_link": "..."
+        }
+        或
+        {
+            "success": false,
+            "error": "..."
+        }
+    """
+    from ..services.watermark_service import watermark_service
+    
+    if not request.url:
+        raise HTTPException(status_code=400, detail="未提供 URL")
+    
+    result = await watermark_service.get_download_link(request.url)
+    
+    return result

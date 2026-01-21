@@ -1,3 +1,31 @@
+"""
+通用 Sora API Lambda 代理
+
+支持的请求类型:
+- nf_create: 创建视频生成任务 (POST /nf/create)
+- nf_create_storyboard: 创建分镜视频任务 (POST /nf/create/storyboard)
+- video_gen: 生成图片 (POST /video_gen)
+- uploads: 上传图片 (POST /uploads)
+- pending: 获取待处理任务 (GET /nf/pending/v2)
+- me: 获取用户信息 (GET /me)
+- enhance_prompt: 增强提示词 (POST /editor/enhance_prompt)
+- post: 发布视频 (POST /project_y/post)
+- custom: 自定义请求 (任意 method + endpoint)
+
+请求格式:
+{
+    "token": "access_token",
+    "action": "nf_create",  // 请求类型
+    "payload": {...},       // 请求体 (POST 请求)
+    "user_agent": "...",    // 可选，自定义 UA
+    "flow": "...",          // 可选，sentinel flow 类型
+    "add_sentinel": true,   // 可选，是否添加 sentinel token (默认根据 action 自动判断)
+    
+    // custom 类型专用:
+    "method": "GET",        // HTTP 方法
+    "endpoint": "/me",      // API 端点
+}
+"""
 import os
 import json
 import base64
@@ -36,6 +64,31 @@ POW_WINDOW_KEYS = [
     "localStorage", "sessionStorage", "crypto", "performance",
     "fetch", "setTimeout", "setInterval", "console",
 ]
+
+# 需要 sentinel token 的 action 列表
+SENTINEL_REQUIRED_ACTIONS = {
+    "nf_create", "nf_create_storyboard", "video_gen", "post"
+}
+
+# action 到 endpoint 的映射
+ACTION_ENDPOINTS = {
+    "nf_create": ("POST", "/nf/create"),
+    "nf_create_storyboard": ("POST", "/nf/create/storyboard"),
+    "video_gen": ("POST", "/video_gen"),
+    "uploads": ("POST", "/uploads"),
+    "pending": ("GET", "/nf/pending/v2"),
+    "me": ("GET", "/me"),
+    "enhance_prompt": ("POST", "/editor/enhance_prompt"),
+    "post": ("POST", "/project_y/post"),
+}
+
+# action 到 flow 的映射
+ACTION_FLOWS = {
+    "nf_create": "sora_2_create_task",
+    "nf_create_storyboard": "sora_2_create_task",
+    "video_gen": "sora_2_create_task",
+    "post": "sora_2_create_task",
+}
 
 
 def _get_header(headers, name):
@@ -140,40 +193,22 @@ def build_openai_sentinel_token(flow, resp, pow_token, user_agent):
     return json.dumps(token_payload, ensure_ascii=False, separators=(",", ":"))
 
 
-def post_json(url, payload, headers, timeout=20):
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+def http_request(url, method="GET", payload=None, headers=None, timeout=20):
+    """通用 HTTP 请求函数"""
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+    
+    req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, resp.read().decode("utf-8")
+            return resp.status, resp.read().decode("utf-8"), dict(resp.headers)
     except urllib.error.HTTPError as e:
-        return e.code, e.read().decode("utf-8")
+        return e.code, e.read().decode("utf-8"), dict(e.headers) if hasattr(e, 'headers') else {}
 
 
-def lambda_handler(event, context):
-    headers = event.get("headers") or {}
-    expected_key = os.environ.get("LAMBDA_SHARED_KEY")
-    if expected_key:
-        provided_key = _get_header(headers, "x-lambda-key")
-        if provided_key != expected_key:
-            return {"statusCode": 401, "body": json.dumps({"error": "invalid lambda key"})}
-
-    body = event.get("body") or "{}"
-    if event.get("isBase64Encoded"):
-        body = base64.b64decode(body).decode("utf-8")
-    data = json.loads(body) if body else {}
-
-    token = data.get("token")
-    payload = data.get("payload") or data.get("nf_create")
-    if not token or not payload:
-        return {"statusCode": 400, "body": json.dumps({"error": "token and payload required"})}
-
-    user_agent = data.get("user_agent") or SORA_APP_USER_AGENT
-    flow = data.get("flow") or "sora_2_create_task"
-
-    sentinel_base = os.environ.get("SENTINEL_BASE_URL", "https://chatgpt.com")
-    sora_base = os.environ.get("SORA_BASE_URL", "https://sora.chatgpt.com/backend")
-
+def get_sentinel_token(token, user_agent, flow, sentinel_base):
+    """获取 sentinel token"""
     pow_token = get_pow_token(user_agent)
     sentinel_req_payload = {"p": pow_token, "flow": flow, "id": generate_id()}
     sentinel_headers = {
@@ -185,28 +220,172 @@ def lambda_handler(event, context):
         "Authorization": f"Bearer {token}",
     }
     sentinel_url = sentinel_base.rstrip("/") + "/backend-api/sentinel/req"
-    status, sentinel_body = post_json(sentinel_url, sentinel_req_payload, sentinel_headers, timeout=10)
+    status, body, _ = http_request(sentinel_url, "POST", sentinel_req_payload, sentinel_headers, timeout=10)
+    
     if status != 200:
-        return {"statusCode": status, "body": sentinel_body}
-
-    sentinel_resp = json.loads(sentinel_body)
+        return None, status, body
+    
+    sentinel_resp = json.loads(body)
     sentinel_token = build_openai_sentinel_token(flow, sentinel_resp, pow_token, user_agent)
+    return sentinel_token, 200, None
 
-    sora_headers = {
+
+def build_sora_headers(token, user_agent, sentinel_token=None, content_type="application/json"):
+    """构建 Sora API 请求头"""
+    headers = {
         "Accept": "application/json",
-        "Content-Type": "application/json",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Language": "en-US,en;q=0.9",
         "Origin": "https://sora.chatgpt.com",
         "Referer": "https://sora.chatgpt.com/",
         "User-Agent": user_agent,
         "Authorization": f"Bearer {token}",
         "oai-device-id": generate_device_id(),
-        "openai-sentinel-token": sentinel_token,
         "oai-package-name": "com.openai.sora",
         "oai-client-type": "android",
     }
+    
+    if content_type:
+        headers["Content-Type"] = content_type
+    
+    if sentinel_token:
+        headers["openai-sentinel-token"] = sentinel_token
+    
+    return headers
 
-    sora_url = sora_base.rstrip("/") + "/nf/create"
-    status, resp_body = post_json(sora_url, payload, sora_headers, timeout=20)
+
+def make_sora_request(token, method, endpoint, payload=None, user_agent=None, 
+                      add_sentinel=False, flow=None, sora_base=None, sentinel_base=None):
+    """
+    通用 Sora API 请求函数
+    
+    Args:
+        token: 访问令牌
+        method: HTTP 方法 (GET/POST)
+        endpoint: API 端点 (如 /nf/create)
+        payload: 请求体 (POST 请求)
+        user_agent: 自定义 UA
+        add_sentinel: 是否添加 sentinel token
+        flow: sentinel flow 类型
+        sora_base: Sora API 基础 URL
+        sentinel_base: Sentinel API 基础 URL
+    
+    Returns:
+        (status_code, response_body, response_headers)
+    """
+    user_agent = user_agent or SORA_APP_USER_AGENT
+    sora_base = sora_base or os.environ.get("SORA_BASE_URL", "https://sora.chatgpt.com/backend")
+    sentinel_base = sentinel_base or os.environ.get("SENTINEL_BASE_URL", "https://chatgpt.com")
+    flow = flow or "sora_2_create_task"
+    
+    sentinel_token = None
+    if add_sentinel:
+        sentinel_token, status, error_body = get_sentinel_token(token, user_agent, flow, sentinel_base)
+        if sentinel_token is None:
+            return status, error_body, {}
+    
+    headers = build_sora_headers(token, user_agent, sentinel_token)
+    url = sora_base.rstrip("/") + endpoint
+    
+    return http_request(url, method, payload, headers, timeout=30)
+
+
+def lambda_handler(event, context):
+    """Lambda 入口函数"""
+    # 验证 Lambda key
+    headers = event.get("headers") or {}
+    expected_key = os.environ.get("LAMBDA_SHARED_KEY")
+    if expected_key:
+        provided_key = _get_header(headers, "x-lambda-key")
+        if provided_key != expected_key:
+            return {"statusCode": 401, "body": json.dumps({"error": "invalid lambda key"})}
+
+    # 解析请求体
+    body = event.get("body") or "{}"
+    if event.get("isBase64Encoded"):
+        body = base64.b64decode(body).decode("utf-8")
+    data = json.loads(body) if body else {}
+
+    # 获取必要参数
+    token = data.get("token")
+    if not token:
+        return {"statusCode": 400, "body": json.dumps({"error": "token required"})}
+
+    # 获取 action，兼容旧格式
+    action = data.get("action")
+    if not action:
+        # 兼容旧格式: 如果有 payload 或 nf_create，默认为 nf_create
+        if data.get("payload") or data.get("nf_create"):
+            action = "nf_create"
+        else:
+            return {"statusCode": 400, "body": json.dumps({"error": "action required"})}
+
+    # 获取可选参数
+    user_agent = data.get("user_agent") or SORA_APP_USER_AGENT
+    sora_base = os.environ.get("SORA_BASE_URL", "https://sora.chatgpt.com/backend")
+    sentinel_base = os.environ.get("SENTINEL_BASE_URL", "https://chatgpt.com")
+
+    # 处理 custom 类型
+    if action == "custom":
+        method = data.get("method", "GET").upper()
+        endpoint = data.get("endpoint")
+        if not endpoint:
+            return {"statusCode": 400, "body": json.dumps({"error": "endpoint required for custom action"})}
+        
+        payload = data.get("payload")
+        add_sentinel = data.get("add_sentinel", False)
+        flow = data.get("flow", "sora_2_create_task")
+        
+        status, resp_body, resp_headers = make_sora_request(
+            token=token,
+            method=method,
+            endpoint=endpoint,
+            payload=payload,
+            user_agent=user_agent,
+            add_sentinel=add_sentinel,
+            flow=flow,
+            sora_base=sora_base,
+            sentinel_base=sentinel_base
+        )
+        
+        return {
+            "statusCode": status,
+            "headers": {"Content-Type": "application/json"},
+            "body": resp_body,
+        }
+
+    # 处理预定义 action
+    if action not in ACTION_ENDPOINTS:
+        return {"statusCode": 400, "body": json.dumps({"error": f"unknown action: {action}"})}
+
+    method, endpoint = ACTION_ENDPOINTS[action]
+    
+    # 获取 payload (兼容旧格式)
+    payload = data.get("payload") or data.get("nf_create")
+    if method == "POST" and payload is None and action not in ("pending", "me"):
+        return {"statusCode": 400, "body": json.dumps({"error": "payload required for POST action"})}
+
+    # 判断是否需要 sentinel token
+    add_sentinel = data.get("add_sentinel")
+    if add_sentinel is None:
+        add_sentinel = action in SENTINEL_REQUIRED_ACTIONS
+
+    # 获取 flow
+    flow = data.get("flow") or ACTION_FLOWS.get(action, "sora_2_create_task")
+
+    # 发起请求
+    status, resp_body, resp_headers = make_sora_request(
+        token=token,
+        method=method,
+        endpoint=endpoint,
+        payload=payload,
+        user_agent=user_agent,
+        add_sentinel=add_sentinel,
+        flow=flow,
+        sora_base=sora_base,
+        sentinel_base=sentinel_base
+    )
+
     return {
         "statusCode": status,
         "headers": {"Content-Type": "application/json"},

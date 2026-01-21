@@ -204,6 +204,35 @@ class UploadLog(BaseModel):
     duration: Optional[float] = None  # Operation duration in seconds
     created_at: Optional[datetime] = None
 
+
+# ========== 去水印相关模型 ==========
+
+class WatermarkAccount(BaseModel):
+    """去水印账号模型"""
+    id: Optional[int] = None
+    name: str = "未命名"
+    access_token: Optional[str] = None
+    refresh_token: Optional[str] = None
+    client_id: str = "app_OHnYmJt5u1XEdhDUx0ig1ziv"
+    enabled: bool = True
+    last_used_at: Optional[datetime] = None
+    request_count: int = 0
+    error_count: int = 0
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class WatermarkLog(BaseModel):
+    """去水印请求日志模型"""
+    id: Optional[int] = None
+    account_id: Optional[int] = None
+    account_name: Optional[str] = None  # 用于显示
+    video_id: str
+    success: bool
+    download_link: Optional[str] = None
+    error_msg: Optional[str] = None
+    created_at: Optional[datetime] = None
+
 # API Request/Response models
 class ChatMessage(BaseModel):
     role: str

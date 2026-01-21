@@ -1,4 +1,5 @@
 """Token management module"""
+import json
 import jwt
 import asyncio
 import random
@@ -33,6 +34,47 @@ class TokenManager:
         self.proxy_manager = ProxyManager(db)
         self.fake = Faker()
         self._token_cache = get_token_cache()
+        # Lambda manager (lazy loaded)
+        self._lambda_manager = None
+
+    async def _get_lambda_manager(self):
+        """获取 Lambda manager 实例"""
+        if self._lambda_manager is None:
+            from .lambda_manager import lambda_manager
+            self._lambda_manager = lambda_manager
+        return self._lambda_manager
+
+    async def _should_use_lambda(self) -> bool:
+        """判断是否应该使用 Lambda 代理"""
+        lambda_mgr = await self._get_lambda_manager()
+        return await lambda_mgr.is_enabled()
+
+    async def _make_lambda_request(
+        self,
+        method: str,
+        url: str,
+        token: str,
+        json_data: Optional[Dict] = None
+    ) -> Dict[str, Any]:
+        """通过 Lambda 代理发起请求"""
+        lambda_mgr = await self._get_lambda_manager()
+        
+        # 从 URL 中提取 endpoint
+        # URL 格式: https://sora.chatgpt.com/backend/xxx 或 config.sora_base_url + endpoint
+        endpoint = url
+        if url.startswith("https://sora.chatgpt.com/backend"):
+            endpoint = url.replace("https://sora.chatgpt.com/backend", "")
+        elif url.startswith(config.sora_base_url):
+            endpoint = url.replace(config.sora_base_url, "")
+        
+        return await lambda_mgr.make_request(
+            token=token,
+            action="custom",
+            method=method,
+            endpoint=endpoint,
+            payload=json_data,
+            add_sentinel=False  # token_manager 的请求通常不需要 sentinel
+        )
 
     async def _make_sora_request(
         self,
@@ -43,6 +85,7 @@ class TokenManager:
         proxy_url: Optional[str] = None,
         json_data: Optional[Dict] = None,
         max_cf_retries: int = 3,
+        use_lambda: Optional[bool] = None,
         **kwargs,
     ) -> Any:
         """通用 Sora API 请求方法，自动处理 Cloudflare challenge
@@ -55,12 +98,46 @@ class TokenManager:
             proxy_url: 代理 URL
             json_data: JSON 请求体
             max_cf_retries: Cloudflare challenge 最大重试次数
+            use_lambda: 是否使用 Lambda 代理 (None = 自动判断)
             **kwargs: 其他请求参数
         
         Returns:
-            Response 对象
+            Response 对象 或 Lambda 返回的 dict
         """
         from ..core.http_utils import DEFAULT_USER_AGENT
+        
+        # 判断是否使用 Lambda 代理
+        # 只有 sora.chatgpt.com/backend 的请求才走 Lambda
+        is_sora_backend = "sora.chatgpt.com/backend" in url or url.startswith(config.sora_base_url)
+        if use_lambda is None and is_sora_backend:
+            use_lambda = await self._should_use_lambda()
+        
+        # 使用 Lambda 代理发起请求
+        if use_lambda and is_sora_backend:
+            # 从 headers 中提取 token
+            auth_header = headers.get("Authorization", "")
+            token = auth_header.replace("Bearer ", "") if auth_header.startswith("Bearer ") else None
+            
+            if token:
+                try:
+                    result = await self._make_lambda_request(
+                        method=method,
+                        url=url,
+                        token=token,
+                        json_data=json_data
+                    )
+                    # 将 Lambda 返回的 dict 包装成类似 Response 的对象
+                    class LambdaResponse:
+                        def __init__(self, data):
+                            self._data = data
+                            self.status_code = 200
+                            self.text = json.dumps(data) if data else ""
+                        def json(self):
+                            return self._data
+                    return LambdaResponse(result)
+                except Exception as e:
+                    print(f"⚠️ [TokenManager] Lambda request failed, falling back to direct: {e}")
+                    # Lambda 失败时回退到直接请求
         
         cf_state = get_cloudflare_state()
         
