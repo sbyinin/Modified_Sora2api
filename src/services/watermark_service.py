@@ -174,7 +174,7 @@ class WatermarkService:
         
         # 根据解析方式选择处理逻辑
         parse_method = watermark_config.parse_method
-        debug_logger.info(f"使用解析方式: {parse_method}")
+        debug_logger.log_info(f"使用解析方式: {parse_method}")
         
         if parse_method == "builtin":
             return await self._get_download_link_builtin(video_id)
@@ -200,7 +200,7 @@ class WatermarkService:
         
         for attempt in range(max_retries):
             try:
-                debug_logger.info(f"内置解析尝试 {attempt + 1}/{max_retries}, 视频ID: {video_id}, 账号: {account['id']}")
+                debug_logger.log_info(f"内置解析尝试 {attempt + 1}/{max_retries}, 视频ID: {video_id}, 账号: {account['id']}")
                 
                 # 发起请求
                 if use_lambda:
@@ -215,30 +215,30 @@ class WatermarkService:
                 await self.db.update_watermark_account_usage(account['id'], success=True)
                 await self.db.add_watermark_log(account['id'], video_id, True, download_link=download_link)
                 
-                debug_logger.info(f"内置解析成功，尝试次数: {attempt + 1}")
+                debug_logger.log_info(f"内置解析成功，尝试次数: {attempt + 1}")
                 return {"success": True, "download_link": download_link}
                 
             except Exception as e:
                 last_error = str(e)
                 error_str = str(e).lower()
-                debug_logger.warning(f"内置解析失败 (尝试 {attempt + 1}): {last_error}")
+                debug_logger.log_error(f"内置解析失败 (尝试 {attempt + 1}): {last_error}")
                 
                 # 检查是否是 401 错误，尝试刷新 token
                 if '401' in error_str and account.get('refresh_token'):
                     try:
-                        debug_logger.info("检测到401错误，尝试刷新token")
+                        debug_logger.log_info("检测到401错误，尝试刷新token")
                         new_access, new_refresh = await self.refresh_token(account)
                         account['access_token'] = new_access
                         await asyncio.sleep(0.5)  # 短暂延迟
                         continue
                     except Exception as refresh_error:
                         last_error = f"Token 刷新失败: {refresh_error}"
-                        debug_logger.error(f"Token刷新失败: {refresh_error}")
+                        debug_logger.log_error(f"Token刷新失败: {refresh_error}")
                 
                 # 429 或 403 错误，切换账号重试
                 if '429' in error_str or '403' in error_str:
                     if attempt < max_retries - 1:
-                        debug_logger.info("检测到限流/权限错误，切换账号重试")
+                        debug_logger.log_info("检测到限流/权限错误，切换账号重试")
                         account = await self.get_next_account()
                         if account:
                             await asyncio.sleep(2)  # 增加延迟时间
@@ -250,7 +250,7 @@ class WatermarkService:
                 # 网络错误等，短暂延迟后重试
                 if any(keyword in error_str for keyword in ['timeout', 'connection', 'network']):
                     if attempt < max_retries - 1:
-                        debug_logger.info("检测到网络错误，延迟后重试")
+                        debug_logger.log_info("检测到网络错误，延迟后重试")
                         await asyncio.sleep(3)  # 网络错误延迟更长
                         continue
                 
@@ -292,7 +292,7 @@ class WatermarkService:
                 'url': f'https://sora.chatgpt.com/p/{video_id}'
             }
             
-            debug_logger.info(f"自定义解析请求: {api_url}")
+            debug_logger.log_info(f"自定义解析请求: {api_url}")
             
             async with AsyncSession() as session:
                 response = await session.post(
@@ -306,16 +306,16 @@ class WatermarkService:
                 data = response.json()
             
             if data.get('success') and data.get('download_link'):
-                debug_logger.info("自定义解析成功")
+                debug_logger.log_info("自定义解析成功")
                 return {"success": True, "download_link": data['download_link']}
             else:
                 error_msg = data.get('error', '自定义解析服务返回失败')
-                debug_logger.warning(f"自定义解析失败: {error_msg}")
+                debug_logger.log_error(f"自定义解析失败: {error_msg}")
                 return {"success": False, "error": error_msg}
                 
         except Exception as e:
             error_msg = f"自定义解析请求失败: {str(e)}"
-            debug_logger.error(error_msg)
+            debug_logger.log_error(error_msg)
             return {"success": False, "error": error_msg}
 
 
