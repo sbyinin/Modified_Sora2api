@@ -1337,9 +1337,19 @@ class Database:
                 raise
     
     async def delete_token(self, token_id: int):
-        """Delete token"""
+        """Delete token and all related records"""
         async with self._connect() as db:
+            # Delete in order to respect foreign key constraints
+            # First delete records that reference the token
+            await db.execute("DELETE FROM request_logs WHERE token_id = ?", (token_id,))
+            await db.execute("DELETE FROM characters WHERE token_id = ?", (token_id,))
+            await db.execute("DELETE FROM video_records WHERE token_id = ?", (token_id,))
             await db.execute("DELETE FROM token_stats WHERE token_id = ?", (token_id,))
+            
+            # Set token_id to NULL for tasks (since foreign key constraint was removed)
+            await db.execute("UPDATE tasks SET token_id = NULL WHERE token_id = ?", (token_id,))
+            
+            # Finally delete the token itself
             await db.execute("DELETE FROM tokens WHERE id = ?", (token_id,))
             await db.commit()
 
