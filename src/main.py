@@ -20,6 +20,8 @@ from .services.sora_client import SoraClient
 from .services.generation_handler import GenerationHandler
 from .services.concurrency_manager import ConcurrencyManager
 from .services.token_cache import get_token_cache
+from .services.watermark_service import watermark_service
+from .services.lambda_manager import lambda_manager
 from .api import routes as api_routes
 from .api import admin as admin_routes
 from .api import public as public_routes
@@ -194,6 +196,9 @@ async def startup_event():
 async def shutdown_event():
     """Cleanup on shutdown"""
     await generation_handler.file_cache.stop_cleanup_task()
+    await generation_handler.file_cache.close()
+    await watermark_service.close()
+    await lambda_manager.close()
     # Close database connection pool (SQLite only)
     if config.db_type == "sqlite":
         await close_pool()

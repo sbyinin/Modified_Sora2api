@@ -7,7 +7,7 @@ import random
 import re
 import sys
 from dataclasses import dataclass
-from typing import Optional, AsyncGenerator, Dict, Any
+from typing import Optional, AsyncGenerator, Dict, Any, List
 from datetime import datetime
 from .sora_client import SoraClient
 from .token_manager import TokenManager
@@ -360,6 +360,47 @@ class GenerationHandler:
         final_username = f"{username}{timestamp_suffix}"
         debug_logger.log_info(f"All retries failed, using timestamp-based username: {final_username}")
         return final_username
+
+    def _parse_timestamps_list(self, timestamps: Optional[Any]) -> Optional[List[int]]:
+        """Parse timestamps from string or list into integer list."""
+        if timestamps is None:
+            return None
+        if isinstance(timestamps, list):
+            parsed = []
+            for value in timestamps:
+                try:
+                    parsed.append(int(value))
+                except (TypeError, ValueError):
+                    continue
+            return parsed or None
+        if isinstance(timestamps, str):
+            parts = [p.strip() for p in timestamps.split(",") if p.strip()]
+            parsed = []
+            for part in parts:
+                try:
+                    parsed.append(int(part))
+                except (TypeError, ValueError):
+                    continue
+            return parsed or None
+        return None
+
+    async def _get_token_for_generation_id(self, generation_id: str):
+        """Get the sticky token associated with a generation_id."""
+        task = await self.db.get_task_by_generation_id(generation_id)
+        if not task or not task.token_id:
+            raise Exception("generation_id not found or token unavailable for sticky flow")
+        token_obj = await self.token_manager.get_token_by_id(task.token_id)
+        if not token_obj:
+            raise Exception("Token not found for generation_id")
+        return token_obj
+
+    async def _acquire_video_slot_for_token(self, token_id: int):
+        """Acquire video concurrency slot for a specific token."""
+        if not self.concurrency_manager:
+            return
+        acquired = await self.concurrency_manager.acquire_video(token_id)
+        if not acquired:
+            raise Exception(f"Token concurrency limit reached for token {token_id}")
 
     def _clean_remix_link_from_prompt(self, prompt: str) -> str:
         """Remove remix link from prompt
@@ -841,6 +882,7 @@ class GenerationHandler:
         last_status_output_time = start_time  # Track last status output time for video generation
         video_status_interval = 30  # Output status every 30 seconds for video generation
         post_link_emitted = False
+        generation_id = None
         draft_url_missing_count = 0
         draft_pending_last_emit = start_time
         draft_pending_emit_interval = 30
@@ -1008,6 +1050,30 @@ class GenerationHandler:
                         for item in items:
                             if item.get("task_id") == task_id:
                                 # Check for content violation
+                                current_generation_id = item.get("id")
+                                if current_generation_id and current_generation_id != generation_id:
+                                    generation_id = current_generation_id
+                                    debug_logger.log_info(f"Generation ID: {generation_id}")
+                                    try:
+                                        await self.db.update_task_generation_id(task_id, generation_id)
+                                    except Exception as update_error:
+                                        debug_logger.log_info(
+                                            f"Failed to update generation_id for {task_id}: {update_error}"
+                                        )
+                                    try:
+                                        cache_extra = {"token_id": token_id} if token_id is not None else {}
+                                        cache_extra["generation_id"] = generation_id
+                                        await redis_mgr.cache_task_progress(
+                                            task_id,
+                                            last_progress,
+                                            "processing",
+                                            extra_data=cache_extra
+                                        )
+                                    except Exception as cache_error:
+                                        debug_logger.log_info(
+                                            f"Failed to cache generation_id for {task_id}: {cache_error}"
+                                        )
+
                                 kind = item.get("kind")
                                 reason_str = item.get("reason_str") or item.get("markdown_reason_str")
                                 url = item.get("url") or item.get("downloadable_url")
@@ -1136,8 +1202,6 @@ class GenerationHandler:
                                 if watermark_free_enabled:
                                     # Watermark-free mode: post video and get watermark-free URL
                                     debug_logger.log_info(f"Entering watermark-free mode for task {task_id}")
-                                    generation_id = item.get("id")
-                                    debug_logger.log_info(f"Generation ID: {generation_id}")
                                     if not generation_id:
                                         raise Exception("Generation ID not found in video draft")
 
@@ -1354,10 +1418,13 @@ class GenerationHandler:
                                 # Task completed
                                 await self.db.update_task(
                                     task_id, "completed", 100.0,
-                                    result_urls=json.dumps([local_url])
+                                    result_urls=json.dumps([local_url]),
+                                    generation_id=generation_id
                                 )
                                 try:
                                     cache_extra = {"token_id": token_id} if token_id is not None else {}
+                                    if generation_id:
+                                        cache_extra["generation_id"] = generation_id
                                     if isinstance(permalink, str) and permalink:
                                         cache_extra["permalink"] = permalink
                                     if isinstance(local_url, str) and local_url:
@@ -1380,6 +1447,11 @@ class GenerationHandler:
                                 )
 
                                 if stream:
+                                    metadata = {}
+                                    if generation_id:
+                                        metadata["generation_id"] = generation_id
+                                    if isinstance(permalink, str) and permalink:
+                                        metadata["permalink"] = permalink
                                     # Final response with structured content
                                     yield self._format_stream_chunk(
                                         content=self._format_result_content(
@@ -1387,6 +1459,7 @@ class GenerationHandler:
                                             url=local_url,
                                             permalink=permalink
                                         ),
+                                        metadata=metadata if metadata else None,
                                         finish_reason="STOP"
                                 )
                                     yield "data: [DONE]\n\n"
@@ -2023,6 +2096,173 @@ class GenerationHandler:
             raise
         finally:
             if token_obj and self.concurrency_manager:
+                await self.concurrency_manager.release_video(token_obj.id)
+
+    async def handle_character_from_generation(self, generation_id: str,
+                                               character_options: Optional[CharacterOptions] = None,
+                                               timestamps: Optional[List[int]] = None,
+                                               character_id: Optional[str] = None) -> AsyncGenerator[str, None]:
+        """Handle character creation from a generation_id (sticky token)."""
+        token_obj = None
+        video_slot_acquired = False
+        try:
+            token_obj = await self._get_token_for_generation_id(generation_id)
+            await self._acquire_video_slot_for_token(token_obj.id)
+            video_slot_acquired = True
+        except Exception as e:
+            raise Exception(f"Failed to acquire sticky token for generation_id: {e}")
+
+        try:
+            yield self._format_stream_chunk(
+                reasoning_content="**Character Creation Begins**\n\nInitializing character creation...\n",
+                is_first=True
+            )
+
+            parsed_timestamps = timestamps
+            if parsed_timestamps is None and character_options:
+                parsed_timestamps = self._parse_timestamps_list(character_options.timestamps)
+
+            # Step 1: Create cameo from generation
+            yield self._format_stream_chunk(
+                reasoning_content="Creating character from generation...\n"
+            )
+            cameo_id = await self.sora_client.create_character_from_generation(
+                generation_id=generation_id,
+                token=token_obj.token,
+                timestamps=parsed_timestamps,
+                character_id=character_id
+            )
+            debug_logger.log_info(f"Generation character created, cameo_id: {cameo_id}")
+
+            # Step 2: Poll for character processing
+            yield self._format_stream_chunk(
+                reasoning_content="Processing generation to extract character...\n"
+            )
+            cameo_status = await self._poll_cameo_status(cameo_id, token_obj.token)
+            debug_logger.log_info(f"Cameo status: {cameo_status}")
+
+            # Extract character info - use custom values if provided, otherwise use API hints
+            if character_options and character_options.username:
+                username = character_options.username
+                debug_logger.log_info(f"Using custom username: {username}")
+            else:
+                username_hint = cameo_status.get("username_hint", "character")
+                username = self._process_character_username(username_hint)
+
+            if character_options and character_options.display_name:
+                display_name = character_options.display_name
+                debug_logger.log_info(f"Using custom display_name: {display_name}")
+            else:
+                display_name = cameo_status.get("display_name_hint", "Character")
+
+            # Step 3: Check username availability and ensure it's available
+            yield self._format_stream_chunk(
+                reasoning_content="Checking username availability...\n"
+            )
+            username = await self._ensure_username_available(username, token_obj.token)
+
+            # Output character name
+            yield self._format_stream_chunk(
+                reasoning_content=f"{display_name} (@{username})\n"
+            )
+
+            # Step 4: Download and cache avatar
+            yield self._format_stream_chunk(
+                reasoning_content="Downloading character avatar...\n"
+            )
+            profile_asset_url = cameo_status.get("profile_asset_url")
+            if not profile_asset_url:
+                raise Exception("Profile asset URL not found in cameo status")
+
+            avatar_data = await self.sora_client.download_character_image(profile_asset_url)
+            debug_logger.log_info(f"Avatar downloaded, size: {len(avatar_data)} bytes")
+
+            # Step 5: Upload avatar
+            yield self._format_stream_chunk(
+                reasoning_content="Uploading character avatar...\n"
+            )
+            asset_pointer = await self.sora_client.upload_character_image(avatar_data, token_obj.token)
+            debug_logger.log_info(f"Avatar uploaded, asset_pointer: {asset_pointer}")
+
+            # Step 6: Finalize character
+            yield self._format_stream_chunk(
+                reasoning_content="Finalizing character creation...\n"
+            )
+
+            if character_options and character_options.instruction_set:
+                instruction_set = character_options.instruction_set
+                debug_logger.log_info(f"Using custom instruction_set")
+            else:
+                instruction_set = cameo_status.get("instruction_set_hint") or cameo_status.get("instruction_set")
+
+            safety_instruction_set = None
+            if character_options and character_options.safety_instruction_set:
+                safety_instruction_set = character_options.safety_instruction_set
+                debug_logger.log_info(f"Using custom safety_instruction_set")
+
+            final_character_id = await self.sora_client.finalize_character(
+                cameo_id=cameo_id,
+                username=username,
+                display_name=display_name,
+                profile_asset_pointer=asset_pointer,
+                instruction_set=instruction_set,
+                safety_instruction_set=safety_instruction_set,
+                token=token_obj.token
+            )
+            debug_logger.log_info(f"Character finalized, character_id: {final_character_id}")
+
+            # Step 7: Set character as public
+            yield self._format_stream_chunk(
+                reasoning_content="Setting character as public...\n"
+            )
+            await self.sora_client.set_character_public(cameo_id, token_obj.token)
+            debug_logger.log_info("Character set as public")
+
+            # Step 8: Save character to database
+            character_record = Character(
+                cameo_id=cameo_id,
+                character_id=final_character_id,
+                token_id=token_obj.id,
+                username=username,
+                display_name=display_name,
+                profile_url=profile_asset_url,
+                instruction_set=json.dumps(instruction_set) if instruction_set else None,
+                safety_instruction_set=json.dumps(safety_instruction_set) if safety_instruction_set else None,
+                visibility="public",
+                status="finalized"
+            )
+            await self.db.create_character(character_record)
+            debug_logger.log_info(f"Character saved to database: cameo_id={cameo_id}")
+
+            # Step 9: Return success message
+            yield self._format_stream_chunk(
+                content=self._format_result_content(
+                    result_type="character",
+                    username=username,
+                    display_name=display_name,
+                    cameo_id=cameo_id,
+                    character_id=final_character_id
+                ),
+                metadata={
+                    "cameo_id": cameo_id,
+                    "character_id": final_character_id,
+                    "username": username,
+                    "display_name": display_name,
+                    "generation_id": generation_id
+                },
+                finish_reason="STOP"
+            )
+            yield "data: [DONE]\n\n"
+
+        except Exception as e:
+            debug_logger.log_error(
+                error_message=f"Character creation from generation failed: {str(e)}",
+                status_code=500,
+                response_text=str(e)
+            )
+            raise
+        finally:
+            if token_obj and self.concurrency_manager and video_slot_acquired:
                 await self.concurrency_manager.release_video(token_obj.id)
 
     async def _handle_character_and_video_generation(self, video_data, prompt: str, model_config: Dict,

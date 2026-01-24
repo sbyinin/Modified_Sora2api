@@ -1,5 +1,4 @@
 """Load balancing module"""
-import random
 import asyncio
 from typing import Optional, List
 from datetime import datetime
@@ -12,7 +11,7 @@ from ..core.logger import debug_logger
 
 
 class LoadBalancer:
-    """Token load balancer with random selection and image generation lock
+    """Token load balancer with round-robin selection and image generation lock
     
     高并发优化：
     - 自动刷新检查移到后台任务，不阻塞请求
@@ -30,6 +29,24 @@ class LoadBalancer:
         self._refresh_task: Optional[asyncio.Task] = None
         self._last_refresh_check: Optional[datetime] = None
         self._refresh_check_interval = 300  # 5 分钟检查一次
+        self._rr_lock = asyncio.Lock()
+        self._rr_indices = {
+            "image": 0,
+            "video": 0,
+            "default": 0
+        }
+
+    async def _select_round_robin(self, tokens: List[Token], key: str) -> Optional[Token]:
+        if not tokens:
+            return None
+        ordered = sorted(tokens, key=lambda t: t.id)
+        async with self._rr_lock:
+            index = self._rr_indices.get(key, 0)
+            if index >= len(ordered):
+                index = 0
+            token = ordered[index]
+            self._rr_indices[key] = (index + 1) % len(ordered)
+        return token
 
     async def _background_refresh_check(self):
         """后台检查并刷新即将过期的 Token"""
@@ -57,7 +74,7 @@ class LoadBalancer:
 
     async def select_token(self, for_image_generation: bool = False, for_video_generation: bool = False) -> Optional[Token]:
         """
-        Select a token using random load balancing
+        Select a token using round-robin load balancing
 
         Args:
             for_image_generation: If True, only select tokens that are not locked for image generation and have image_enabled=True
@@ -128,8 +145,7 @@ class LoadBalancer:
             if not available_tokens:
                 return None
 
-            # Random selection from available tokens
-            return random.choice(available_tokens)
+            return await self._select_round_robin(available_tokens, "image")
         else:
             # For video generation, check concurrency limit
             if for_video_generation and self.concurrency_manager:
@@ -139,7 +155,8 @@ class LoadBalancer:
                         available_tokens.append(token)
                 if not available_tokens:
                     return None
-                return random.choice(available_tokens)
+                return await self._select_round_robin(available_tokens, "video")
             else:
                 # For video generation without concurrency manager, no additional filtering
-                return random.choice(active_tokens)
+                key = "video" if for_video_generation else "default"
+                return await self._select_round_robin(active_tokens, key)

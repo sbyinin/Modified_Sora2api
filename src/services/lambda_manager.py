@@ -4,10 +4,13 @@ Manages round-robin polling of multiple Lambda endpoints for video generation.
 Provides a generic interface for all Sora API requests via Lambda.
 """
 import asyncio
+import errno
 import httpx
-from typing import List, Optional, Dict, Any
+import random
+from typing import List, Optional, Dict, Any, Iterable
 from ..core.database import Database
 from ..core.models import LambdaConfig
+from ..core.config import config
 
 
 class LambdaManager:
@@ -20,6 +23,99 @@ class LambdaManager:
         self._config_cache: Optional[List[LambdaConfig]] = None
         self._cache_time = 0
         self._cache_ttl = 60  # Cache config for 60 seconds
+        self._client: Optional[httpx.AsyncClient] = None
+        self._client_lock = asyncio.Lock()
+        self._max_concurrency = self._normalize_int(config.lambda_max_concurrency, default=5, minimum=1)
+        self._request_semaphore = asyncio.Semaphore(self._max_concurrency)
+        self._limits = self._build_limits()
+        self._timeout = self._normalize_float(config.lambda_timeout, default=30.0, minimum=1.0)
+        self._retry_backoff_base = 0.5
+        self._retry_backoff_max = 2.0
+
+    def _normalize_int(self, value: Optional[int], default: int, minimum: int = 1) -> int:
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError):
+            return default
+        return normalized if normalized >= minimum else default
+
+    def _normalize_float(self, value: Optional[float], default: float, minimum: float = 0.0) -> float:
+        try:
+            normalized = float(value)
+        except (TypeError, ValueError):
+            return default
+        return normalized if normalized >= minimum else default
+
+    def _build_limits(self) -> httpx.Limits:
+        max_connections = self._normalize_int(
+            config.lambda_max_connections,
+            default=max(self._max_concurrency * 2, 10),
+            minimum=1
+        )
+        max_keepalive = self._normalize_int(
+            config.lambda_max_keepalive_connections,
+            default=min(max_connections, max(self._max_concurrency, 5)),
+            minimum=1
+        )
+        keepalive_expiry = self._normalize_float(
+            config.lambda_keepalive_expiry,
+            default=20.0,
+            minimum=1.0
+        )
+        return httpx.Limits(
+            max_connections=max_connections,
+            max_keepalive_connections=max_keepalive,
+            keepalive_expiry=keepalive_expiry
+        )
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        if self._client is not None:
+            return self._client
+        async with self._client_lock:
+            if self._client is None:
+                self._client = httpx.AsyncClient(
+                    timeout=httpx.Timeout(self._timeout),
+                    limits=self._limits
+                )
+        return self._client
+
+    async def close(self):
+        """Close shared HTTP client"""
+        if self._client is None:
+            return
+        async with self._client_lock:
+            if self._client is not None:
+                await self._client.aclose()
+                self._client = None
+
+    def _iter_exception_chain(self, exc: BaseException) -> Iterable[BaseException]:
+        current = exc
+        seen = set()
+        while current and id(current) not in seen:
+            seen.add(id(current))
+            yield current
+            current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+
+    def _is_fd_exhausted_error(self, exc: BaseException) -> bool:
+        for item in self._iter_exception_chain(exc):
+            if isinstance(item, OSError) and getattr(item, "errno", None) in (errno.EMFILE, errno.ENFILE):
+                return True
+            if "too many open files" in str(item).lower():
+                return True
+        return False
+
+    async def _backoff(self, attempt: int):
+        delay = min(self._retry_backoff_base * (2 ** attempt), self._retry_backoff_max)
+        jitter = random.uniform(0, self._retry_backoff_base)
+        await asyncio.sleep(delay + jitter)
+
+    async def _handle_retry(self, exc: Exception, attempt: int, total: int) -> bool:
+        if self._is_fd_exhausted_error(exc):
+            print("[Lambda] Local FD limit reached; aborting remaining endpoints.")
+            return False
+        if attempt < total - 1 and self._retry_backoff_base > 0:
+            await self._backoff(attempt)
+        return True
     
     async def _get_config(self) -> List[LambdaConfig]:
         """Get Lambda configuration with caching"""
@@ -136,6 +232,8 @@ class LambdaManager:
             except Exception as e:
                 last_error = e
                 print(f"⚠️ [Lambda] Failed to create task using {endpoint['url']}: {str(e)}")
+                if not await self._handle_retry(e, attempt, len(endpoints)):
+                    break
                 continue
         
         # All endpoints failed
@@ -143,7 +241,7 @@ class LambdaManager:
         print(f"❌ [Lambda] {error_msg}")
         raise HTTPException(status_code=502, detail=error_msg)
     
-    async def _post_create_task(self, lambda_url: str, api_key: str, 
+    async def _post_create_task(self, lambda_url: str, api_key: Optional[str],
                                token: str, payload: Dict[str, Any]) -> str:
         """Post task creation request to specific Lambda endpoint
         
@@ -161,15 +259,17 @@ class LambdaManager:
         """
         headers = {
             "Content-Type": "application/json",
-            "x-lambda-key": api_key
         }
+        if api_key:
+            headers["x-lambda-key"] = api_key
         
         request_data = {
             "token": token,
             "payload": payload
         }
         
-        async with httpx.AsyncClient(timeout=30) as client:
+        client = await self._get_client()
+        async with self._request_semaphore:
             response = await client.post(
                 lambda_url,
                 json=request_data,
@@ -264,6 +364,8 @@ class LambdaManager:
             except Exception as e:
                 last_error = e
                 print(f"⚠️ [Lambda] Request '{action}' failed using {ep['url']}: {str(e)}")
+                if not await self._handle_retry(e, attempt, len(endpoints)):
+                    break
                 continue
         
         # All endpoints failed
@@ -294,8 +396,9 @@ class LambdaManager:
             "Content-Type": "application/json",
             "x-lambda-key": api_key
         }
-        
-        async with httpx.AsyncClient(timeout=30) as client:
+
+        client = await self._get_client()
+        async with self._request_semaphore:
             response = await client.post(
                 lambda_url,
                 json=request_data,
@@ -355,6 +458,8 @@ class LambdaManager:
             except Exception as e:
                 last_error = e
                 print(f"⚠️ [Lambda] RT to AT failed using {ep['url']}: {str(e)}")
+                if not await self._handle_retry(e, attempt, len(endpoints)):
+                    break
                 continue
         
         # All endpoints failed
@@ -404,6 +509,8 @@ class LambdaManager:
             except Exception as e:
                 last_error = e
                 print(f"⚠️ [Lambda] ST to AT failed using {ep['url']}: {str(e)}")
+                if not await self._handle_retry(e, attempt, len(endpoints)):
+                    break
                 continue
         
         # All endpoints failed

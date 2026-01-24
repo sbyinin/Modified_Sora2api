@@ -6,7 +6,7 @@ import time
 import random
 import string
 import re
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 from curl_cffi.requests import AsyncSession
 from curl_cffi import CurlMime
 from .proxy_manager import ProxyManager
@@ -994,6 +994,33 @@ class SoraClient:
             raise
 
     # ==================== Character Creation Methods ====================
+
+    async def create_character_from_generation(self, generation_id: str, token: str,
+                                               timestamps: Optional[List[int]] = None,
+                                               character_id: Optional[str] = None) -> str:
+        """Create character (cameo) from a generation ID
+
+        Args:
+            generation_id: Generation ID (e.g., gen_01kcv3cggjfs6vnq7e7vb8zm15)
+            token: Access token
+            timestamps: Optional list of timestamps (seconds) for character extraction
+            character_id: Optional character_id to update (if supported)
+
+        Returns:
+            cameo_id from API response
+        """
+        payload: Dict[str, Any] = {
+            "generation_id": generation_id,
+            "character_id": character_id,
+        }
+        if timestamps:
+            payload["timestamps"] = timestamps
+
+        result = await self._make_request("POST", "/characters/from-generation", token, json_data=payload)
+        cameo_id = result.get("id") or result.get("cameo_id")
+        if not cameo_id:
+            raise Exception("No cameo_id in from-generation response")
+        return cameo_id
 
     async def upload_character_video(self, video_data: bytes, token: str, timestamps: str = None) -> str:
         """Upload character video and return cameo_id

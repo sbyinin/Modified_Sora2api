@@ -5,6 +5,7 @@ Provides standard OpenAI API format for:
 - /v1/videos - Video generation (supports multipart/form-data and JSON)
 - /v1/images/generations - Image generation (supports multipart/form-data and JSON)
 - /v1/characters - Character creation (supports multipart/form-data and JSON)
+- /v1/characters/from-generation - Character creation from generation_id
 - /v1/models - List available models
 """
 from fastapi import APIRouter, HTTPException, Depends, Form, File, UploadFile, Request
@@ -17,7 +18,6 @@ import time
 import asyncio
 import uuid
 import re
-import httpx
 from ..core.auth import verify_api_key_header
 from ..services.generation_handler import GenerationHandler, MODEL_CONFIG
 from ..core.models import CharacterOptions, ChatCompletionRequest
@@ -205,9 +205,16 @@ async def create_chat_completion(
         # Check if this is a video model
         model_config = MODEL_CONFIG[request.model]
         is_video_model = model_config["type"] == "video"
+        want_character_from_image = bool(
+            is_video_model
+            and image_data
+            and request.character_options
+            and not video_data
+            and not remix_target_id
+        )
 
         # For video models with video parameter, we need streaming
-        if is_video_model and (video_data or remix_target_id):
+        if is_video_model and (video_data or remix_target_id or want_character_from_image):
             if not request.stream:
                 # Non-streaming mode: only check availability
                 result = None
@@ -217,6 +224,7 @@ async def create_chat_completion(
                     image=image_data,
                     video=video_data,
                     remix_target_id=remix_target_id,
+                    character_options=request.character_options,
                     stream=False,
                     style_id=request.style_id
                 ):
@@ -244,6 +252,8 @@ async def create_chat_completion(
                 if not generation_handler.sora_client.is_storyboard_prompt(prompt):
                     from ..services.lambda_manager import lambda_manager
                     use_lambda = await lambda_manager.is_enabled()
+            if want_character_from_image:
+                use_lambda = False
 
             async def generate():
                 has_error = False
@@ -251,7 +261,19 @@ async def create_chat_completion(
                 next_task = None
                 disconnect_task = None
                 try:
-                    if use_lambda:
+                    if want_character_from_image:
+                        timestamps_list = None
+                        if request.character_options:
+                            timestamps_list = _parse_timestamps_list(request.character_options.timestamps)
+                        gen = _stream_character_from_image(
+                            model=request.model,
+                            prompt=prompt,
+                            image_data=image_data,
+                            character_options=request.character_options,
+                            timestamps=timestamps_list,
+                            style_id=request.style_id
+                        )
+                    elif use_lambda:
                         gen = _lambda_video_generation_stream(
                             prompt=prompt,
                             image_data=image_data,
@@ -267,6 +289,7 @@ async def create_chat_completion(
                             video=video_data,
                             remix_target_id=remix_target_id,
                             stream=True,
+                            character_options=request.character_options,
                             style_id=request.style_id
                         )
                     next_task = asyncio.create_task(gen.__anext__())
@@ -342,6 +365,7 @@ async def create_chat_completion(
                 image=image_data,
                 video=video_data,
                 remix_target_id=remix_target_id,
+                character_options=request.character_options,
                 stream=False,
                 style_id=request.style_id
             ):
@@ -409,12 +433,102 @@ def _extract_url_from_chunks(chunks_data: list) -> Optional[str]:
     return None
 
 
+def _extract_metadata_from_chunk(chunk: str) -> dict:
+    """Extract metadata from a streaming chunk."""
+    if chunk.startswith("data: ") and chunk != "data: [DONE]\n\n":
+        try:
+            data = json.loads(chunk[6:])
+            choices = data.get("choices", [])
+            if choices:
+                delta = choices[0].get("delta", {})
+                metadata = delta.get("metadata", {})
+                if isinstance(metadata, dict):
+                    return metadata
+        except Exception:
+            pass
+    return {}
+
+
+def _parse_sse_chunk(chunk: str) -> Optional[dict]:
+    """Parse SSE chunk payload into a dict."""
+    if not chunk.startswith("data: ") or chunk == "data: [DONE]\n\n":
+        return None
+    try:
+        return json.loads(chunk[6:])
+    except Exception:
+        return None
+
+
+def _chunk_has_content(chunk: str) -> bool:
+    """Check if an SSE chunk contains content."""
+    data = _parse_sse_chunk(chunk)
+    if not data:
+        return False
+    choices = data.get("choices", [])
+    if not choices:
+        return False
+    delta = choices[0].get("delta", {})
+    content = delta.get("content")
+    return bool(content)
+
+
+def _strip_role_from_chunk(chunk: str) -> str:
+    """Remove role field from delta to avoid duplicate role output."""
+    data = _parse_sse_chunk(chunk)
+    if not data:
+        return chunk
+    choices = data.get("choices", [])
+    if not choices:
+        return chunk
+    delta = choices[0].get("delta", {})
+    if "role" not in delta:
+        return chunk
+    delta = dict(delta)
+    delta.pop("role", None)
+    choices[0]["delta"] = delta
+    data["choices"] = choices
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _ensure_image_prompt(prompt: Optional[str]) -> str:
+    """Provide a default prompt when image-only input is used."""
+    if prompt:
+        return prompt
+    return "Create a short neutral video of the provided image."
+
+
+def _parse_timestamps_list(value: Optional[Union[str, List[int]]]) -> Optional[List[int]]:
+    """Parse timestamps from string or list."""
+    if value is None:
+        return None
+    if isinstance(value, list):
+        parsed = []
+        for item in value:
+            try:
+                parsed.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        return parsed or None
+    if isinstance(value, str):
+        parts = [p.strip() for p in value.split(",") if p.strip()]
+        parsed = []
+        for part in parts:
+            try:
+                parsed.append(int(part))
+            except (TypeError, ValueError):
+                continue
+        return parsed or None
+    return None
+
+
 def _extract_video_info_from_chunks(chunks_data: list) -> dict:
     """Extract video info (url/permalink) from streaming chunks.
 
     Prefers parsing the structured JSON string produced by GenerationHandler,
     and falls back to regex extraction when needed.
     """
+    found_generation_id = None
+    found_permalink = None
     for chunk in chunks_data:
         if chunk.startswith("data: ") and chunk != "data: [DONE]\n\n":
             try:
@@ -424,6 +538,12 @@ def _extract_video_info_from_chunks(chunks_data: list) -> dict:
                     continue
 
                 delta = choices[0].get("delta", {})
+                metadata = delta.get("metadata", {})
+                if isinstance(metadata, dict):
+                    if metadata.get("generation_id"):
+                        found_generation_id = metadata.get("generation_id")
+                    if metadata.get("permalink"):
+                        found_permalink = metadata.get("permalink")
                 content = delta.get("content")
                 if not content:
                     continue
@@ -442,7 +562,11 @@ def _extract_video_info_from_chunks(chunks_data: list) -> dict:
                         url = data_items[0].get("url")
                     if not permalink and data_items and isinstance(data_items[0], dict):
                         permalink = data_items[0].get("permalink")
-                    return {"url": url, "permalink": permalink}
+                    return {
+                        "url": url,
+                        "permalink": permalink or found_permalink,
+                        "generation_id": found_generation_id
+                    }
 
                 # Fallback: extract by regex
                 url_match = re.search(r'https?://[^\s\]"\']+', content)
@@ -450,9 +574,11 @@ def _extract_video_info_from_chunks(chunks_data: list) -> dict:
                     url = _strip_markdown_wrapped_paren(
                         url_match.group(0), content, url_match.start()
                     )
-                    return {"url": url, "permalink": None}
+                    return {"url": url, "permalink": found_permalink, "generation_id": found_generation_id}
             except Exception:
                 pass
+    if found_generation_id:
+        return {"generation_id": found_generation_id, "permalink": found_permalink}
     return {}
 
 
@@ -478,6 +604,8 @@ def _extract_character_info(chunks_data: list) -> dict:
                             result["username"] = metadata["username"]
                         if metadata.get("display_name"):
                             result["display_name"] = metadata["display_name"]
+                        if metadata.get("generation_id"):
+                            result["generation_id"] = metadata["generation_id"]
                     # Check content for character info
                     content = delta.get("content", "")
                     if content:
@@ -491,6 +619,49 @@ def _extract_character_info(chunks_data: list) -> dict:
             except Exception:
                 pass
     return result
+
+
+async def _stream_character_from_image(
+    model: str,
+    prompt: str,
+    image_data: str,
+    character_options: CharacterOptions,
+    timestamps: Optional[List[int]],
+    style_id: Optional[str]
+):
+    """Stream image-to-video generation, then create a character from generation_id."""
+    chunks = []
+    final_prompt = _ensure_image_prompt(prompt)
+    async for chunk in generation_handler.handle_generation(
+        model=model,
+        prompt=final_prompt,
+        image=image_data,
+        stream=True,
+        style_id=style_id
+    ):
+        if isinstance(chunk, str):
+            chunks.append(chunk)
+        if chunk == "data: [DONE]\n\n":
+            continue
+        if _chunk_has_content(chunk):
+            continue
+        yield chunk
+
+    video_info = _extract_video_info_from_chunks(chunks)
+    generation_id = video_info.get("generation_id")
+    if not generation_id:
+        raise HTTPException(status_code=500, detail="generation_id not found for image-to-character flow")
+
+    phase2_first = True
+    async for chunk in generation_handler.handle_character_from_generation(
+        generation_id=generation_id,
+        character_options=character_options,
+        timestamps=timestamps
+    ):
+        if phase2_first:
+            chunk = _strip_role_from_chunk(chunk)
+            phase2_first = False
+        yield chunk
 
 
 # ============================================================
@@ -538,6 +709,11 @@ async def _process_video_generation_v2(video_id: str):
             chunk_count += 1
             if isinstance(chunk, str):
                 last_chunk = chunk
+                metadata = _extract_metadata_from_chunk(chunk)
+                if metadata.get("generation_id"):
+                    task_info["generation_id"] = metadata.get("generation_id")
+                if metadata.get("permalink"):
+                    task_info["permalink"] = metadata.get("permalink")
                 # Extract progress percentage if present
                 match = re.search(r'(\d+)%', chunk)
                 if match:
@@ -624,9 +800,20 @@ async def _process_video_generation_v2(video_id: str):
         
         # Update database
         if result_url:
-            await db.update_task(video_id, "completed", 100.0, result_urls=result_url)
+            await db.update_task(
+                video_id,
+                "completed",
+                100.0,
+                result_urls=result_url,
+                generation_id=task_info.get("generation_id")
+            )
         else:
-            await db.update_task(video_id, "completed", 100.0)
+            await db.update_task(
+                video_id,
+                "completed",
+                100.0,
+                generation_id=task_info.get("generation_id")
+            )
         
         print(f"[VideoTask] {video_id}: Task completed successfully. Status in memory: {task_info['status']}")
     
@@ -676,32 +863,17 @@ def _build_nf_create_payload(prompt: str, orientation: str, n_frames: int, media
 
 async def _post_lambda_create_task(lambda_url: str, lambda_key: Optional[str],
                                   token: str, payload: dict) -> str:
-    headers = {"Content-Type": "application/json"}
-    if lambda_key:
-        headers["x-lambda-key"] = lambda_key
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post(
-            lambda_url,
-            json={
-                "token": token,
-                "payload": payload
-            },
-            headers=headers
-        )
-
-    if response.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"Lambda create failed: {response.text}")
+    from ..services.lambda_manager import lambda_manager
 
     try:
-        data = response.json()
-    except Exception:
-        raise HTTPException(status_code=502, detail="Lambda create returned invalid JSON")
-
-    task_id = data.get("id") or data.get("task_id")
-    if not task_id:
-        raise HTTPException(status_code=502, detail="Lambda create did not return task id")
-    return task_id
+        return await lambda_manager._post_create_task(
+            lambda_url=lambda_url,
+            api_key=lambda_key,
+            token=token,
+            payload=payload
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Lambda create failed: {exc}")
 
 
 async def _poll_lambda_task_result(task_id: str, token_obj, prompt: str,
@@ -1126,6 +1298,8 @@ async def create_video(
                 "completed_at": None,
                 "expires_at": None,
                 "result_url": None,
+                "generation_id": None,
+                "permalink": None,
                 "error": None,
             }
             
@@ -1163,24 +1337,31 @@ async def create_video(
         # Extract result
         video_info = _extract_video_info_from_chunks(chunks)
         url = video_info.get("url") or _extract_url_from_chunks(chunks)
+        generation_id = video_info.get("generation_id")
+        permalink = video_info.get("permalink")
         
         if url:
             # Return completed response (new-api-main compatible)
             # IMPORTANT: Must return 200 OK, not 201 Created - new-api checks for 200
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "id": video_id,
-                    "object": "video",
-                    "model": model,
-                    "status": "completed",
-                    "progress": 100,
-                    "created_at": created_at,
-                    "completed_at": int(time.time()),
-                    "seconds": str(duration),
-                    "size": size,
-                }
-            )
+            metadata = {}
+            if generation_id:
+                metadata["generation_id"] = generation_id
+            if permalink:
+                metadata["permalink"] = permalink
+            response = {
+                "id": video_id,
+                "object": "video",
+                "model": model,
+                "status": "completed",
+                "progress": 100,
+                "created_at": created_at,
+                "completed_at": int(time.time()),
+                "seconds": str(duration),
+                "size": size,
+            }
+            if metadata:
+                response["metadata"] = metadata
+            return JSONResponse(status_code=200, content=response)
         else:
             raise HTTPException(status_code=500, detail="Video generation failed")
     
@@ -1252,6 +1433,14 @@ async def get_video(
         
         if task_info.get("error"):
             response["error"] = task_info["error"]
+
+        metadata = {}
+        if task_info.get("generation_id"):
+            metadata["generation_id"] = task_info["generation_id"]
+        if task_info.get("permalink"):
+            metadata["permalink"] = task_info["permalink"]
+        if metadata:
+            response["metadata"] = metadata
         
         return JSONResponse(content=response)
     
@@ -1313,6 +1502,12 @@ async def get_video(
             "message": task.error_message,
             "code": "generation_failed"
         }
+
+    metadata = {}
+    if task.generation_id:
+        metadata["generation_id"] = task.generation_id
+    if metadata:
+        response["metadata"] = metadata
     
     return JSONResponse(content=response)
 
@@ -1526,6 +1721,8 @@ async def remix_video(
                 "completed_at": None,
                 "expires_at": None,
                 "result_url": None,
+                "generation_id": None,
+                "permalink": None,
                 "error": None,
             }
             
@@ -1699,6 +1896,89 @@ async def test_create_video(
 
 
 # ============================================================
+# /v1/characters/from-generation - Character Creation from generation_id
+# ============================================================
+
+@router.post("/v1/characters/from-generation")
+async def create_character_from_generation(
+    request: Request,
+    generation_id: Optional[str] = Form(None, description="Generation ID (gen_xxx)"),
+    timestamps: Optional[str] = Form(None, description="Timestamps for extraction (e.g., '0,4')"),
+    character_id: Optional[str] = Form(None, description="Optional character_id to update"),
+    username: Optional[str] = Form(None, description="Custom username for character"),
+    display_name: Optional[str] = Form(None, description="Custom display name for character"),
+    instruction_set: Optional[str] = Form(None, description="Character instruction set"),
+    safety_instruction_set: Optional[str] = Form(None, description="Safety instruction set"),
+    api_key: str = Depends(verify_api_key_header)
+):
+    """Create a character from generation_id (sticky token flow).
+
+    Supports both multipart/form-data and JSON body.
+    Returns final result only (non-streaming output).
+    """
+    try:
+        content_type = request.headers.get("content-type", "")
+        body_timestamps = None
+        if "application/json" in content_type:
+            body = await request.json()
+            generation_id = body.get("generation_id", generation_id)
+            body_timestamps = body.get("timestamps")
+            character_id = body.get("character_id", character_id)
+            username = body.get("username", username)
+            display_name = body.get("display_name", display_name)
+            instruction_set = body.get("instruction_set", instruction_set)
+            safety_instruction_set = body.get("safety_instruction_set", safety_instruction_set)
+
+        if not generation_id:
+            raise HTTPException(status_code=400, detail="generation_id is required")
+
+        timestamps_value = body_timestamps if body_timestamps is not None else timestamps
+        timestamps_list = _parse_timestamps_list(timestamps_value)
+
+        if character_id == "":
+            character_id = None
+
+        character_options = CharacterOptions(
+            timestamps=timestamps if isinstance(timestamps, str) else None,
+            username=username,
+            display_name=display_name,
+            instruction_set=instruction_set,
+            safety_instruction_set=safety_instruction_set
+        )
+
+        chunks = []
+        async for chunk in generation_handler.handle_character_from_generation(
+            generation_id=generation_id,
+            character_options=character_options,
+            timestamps=timestamps_list,
+            character_id=character_id
+        ):
+            chunks.append(chunk)
+
+        char_info = _extract_character_info(chunks)
+        if not char_info:
+            char_info = {"message": "Character creation completed"}
+
+        if username:
+            char_info["username"] = username
+        if display_name:
+            char_info["display_name"] = display_name
+        char_info["generation_id"] = generation_id
+
+        return JSONResponse(content={
+            "id": f"char_{uuid.uuid4().hex[:24]}",
+            "object": "character",
+            "created": int(time.time()),
+            "model": "from-generation",
+            "data": char_info
+        })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": {"message": str(e), "type": "server_error", "param": None, "code": None}})
+
+# ============================================================
 # /v1/images/generations - Image Generation
 # ============================================================
 
@@ -1844,16 +2124,20 @@ async def create_image(
 async def create_character(
     request: Request,
     model: str = Form("sora-video-10s", description="Video model to use"),
+    prompt: Optional[str] = Form(None, description="Prompt for image-to-video when creating character from image"),
     video: Optional[UploadFile] = File(None, description="Video file for character extraction"),
     video_base64: Optional[str] = Form(None, description="Base64 encoded video"),
+    input_reference: Optional[UploadFile] = File(None, description="Reference image file for image-to-character"),
+    input_image: Optional[str] = Form(None, description="Base64 encoded reference image for image-to-character"),
     timestamps: Optional[str] = Form(None, description="Video timestamps for character extraction (e.g., '0,3')"),
     username: Optional[str] = Form(None, description="Custom username for character"),
     display_name: Optional[str] = Form(None, description="Custom display name for character"),
     instruction_set: Optional[str] = Form(None, description="Character instruction set"),
     safety_instruction_set: Optional[str] = Form(None, description="Safety instruction set"),
+    style_id: Optional[str] = Form(None, description="Video style for image-to-character"),
     api_key: str = Depends(verify_api_key_header)
 ):
-    """Create a character from video
+    """Create a character from video or image
     
     Supports both multipart/form-data and JSON body.
     Returns final result only (non-streaming output).
@@ -1902,12 +2186,17 @@ async def create_character(
         if "application/json" in content_type:
             body = await request.json()
             model = body.get("model", model)
+            prompt = body.get("prompt", prompt)
             video_base64 = body.get("video", video_base64)
             timestamps = body.get("timestamps", timestamps)
             username = body.get("username", username)
             display_name = body.get("display_name", display_name)
             instruction_set = body.get("instruction_set", instruction_set)
             safety_instruction_set = body.get("safety_instruction_set", safety_instruction_set)
+            input_image = body.get("input_image", input_image)
+            if not input_image:
+                input_image = body.get("image", input_image)
+            style_id = body.get("style_id", style_id)
         
         # Validate model
         if model not in MODEL_CONFIG:
@@ -1917,57 +2206,120 @@ async def create_character(
         if model_config["type"] != "video":
             raise HTTPException(status_code=400, detail=f"Model {model} is not a video model")
         
-        # Process video
-        video_data = None
-        if video:
-            content = await video.read()
-            video_data = base64.b64encode(content).decode('utf-8')
-        elif video_base64:
-            video_data = video_base64
-            if "base64," in video_data:
-                video_data = video_data.split("base64,", 1)[1]
-        
-        if not video_data:
-            raise HTTPException(status_code=400, detail="video is required for character creation")
-        
+        timestamps_value = timestamps
+        timestamps_list = _parse_timestamps_list(timestamps_value)
+        if isinstance(timestamps_value, str):
+            timestamps_str = timestamps_value
+        elif isinstance(timestamps_list, list):
+            timestamps_str = ",".join(str(value) for value in timestamps_list)
+        else:
+            timestamps_str = None
+
         # Build character options
         character_options = CharacterOptions(
-            timestamps=timestamps,
+            timestamps=timestamps_str,
             username=username,
             display_name=display_name,
             instruction_set=instruction_set,
             safety_instruction_set=safety_instruction_set
         )
-        
-        # Create character (internal streaming, external non-streaming)
-        chunks = []
-        async for chunk in generation_handler.handle_generation(
-            model=model,
-            prompt="",  # Empty prompt for character creation only
-            video=video_data,
-            stream=True,
-            character_options=character_options
-        ):
-            chunks.append(chunk)
-        
-        # Extract character info
-        char_info = _extract_character_info(chunks)
-        if not char_info:
-            char_info = {"message": "Character creation completed"}
-        
-        # Add username/display_name to response if provided
-        if username:
-            char_info["username"] = username
-        if display_name:
-            char_info["display_name"] = display_name
-        
-        return JSONResponse(content={
-            "id": f"char_{uuid.uuid4().hex[:24]}",
-            "object": "character",
-            "created": int(time.time()),
-            "model": model,
-            "data": char_info
-        })
+
+        # Process video input
+        video_data = None
+        if video:
+            content = await video.read()
+            video_data = base64.b64encode(content).decode("utf-8")
+        elif video_base64:
+            video_data = video_base64
+            if "base64," in video_data:
+                video_data = video_data.split("base64,", 1)[1]
+
+        # Process image input (image-to-character)
+        image_data = None
+        if input_reference:
+            content = await input_reference.read()
+            image_data = base64.b64encode(content).decode("utf-8")
+        elif input_image:
+            image_data = input_image
+            if "base64," in image_data:
+                image_data = image_data.split("base64,", 1)[1]
+
+        if video_data:
+            # Create character from video (internal streaming, external non-streaming)
+            chunks = []
+            async for chunk in generation_handler.handle_generation(
+                model=model,
+                prompt="",  # Empty prompt for character creation only
+                video=video_data,
+                stream=True,
+                character_options=character_options
+            ):
+                chunks.append(chunk)
+
+            # Extract character info
+            char_info = _extract_character_info(chunks)
+            if not char_info:
+                char_info = {"message": "Character creation completed"}
+
+            # Add username/display_name to response if provided
+            if username:
+                char_info["username"] = username
+            if display_name:
+                char_info["display_name"] = display_name
+
+            return JSONResponse(content={
+                "id": f"char_{uuid.uuid4().hex[:24]}",
+                "object": "character",
+                "created": int(time.time()),
+                "model": model,
+                "data": char_info
+            })
+
+        if image_data:
+            # Image -> video -> character (sticky token via generation_id)
+            final_prompt = _ensure_image_prompt(prompt)
+            chunks = []
+            async for chunk in generation_handler.handle_generation(
+                model=model,
+                prompt=final_prompt,
+                image=image_data,
+                stream=True,
+                style_id=style_id
+            ):
+                chunks.append(chunk)
+
+            video_info = _extract_video_info_from_chunks(chunks)
+            generation_id = video_info.get("generation_id")
+            if not generation_id:
+                raise HTTPException(status_code=500, detail="generation_id not found for image-to-character flow")
+
+            char_chunks = []
+            async for chunk in generation_handler.handle_character_from_generation(
+                generation_id=generation_id,
+                character_options=character_options,
+                timestamps=timestamps_list
+            ):
+                char_chunks.append(chunk)
+
+            char_info = _extract_character_info(char_chunks)
+            if not char_info:
+                char_info = {"message": "Character creation completed"}
+
+            if username:
+                char_info["username"] = username
+            if display_name:
+                char_info["display_name"] = display_name
+            char_info["generation_id"] = generation_id
+
+            return JSONResponse(content={
+                "id": f"char_{uuid.uuid4().hex[:24]}",
+                "object": "character",
+                "created": int(time.time()),
+                "model": model,
+                "data": char_info
+            })
+
+        raise HTTPException(status_code=400, detail="video or input_image is required for character creation")
     
     except HTTPException:
         raise

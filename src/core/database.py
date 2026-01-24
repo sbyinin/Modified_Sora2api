@@ -612,7 +612,7 @@ class Database:
         
         使用版本号机制，只在版本变化时执行完整迁移检查
         """
-        CURRENT_DB_VERSION = 11  # 增加此版本号以触发迁移
+        CURRENT_DB_VERSION = 12  # 增加此版本号以触发迁移
         
         db = await self._get_connection()
         try:
@@ -687,6 +687,7 @@ class Database:
             ("proxy_config", "proxy_pool_enabled", "BOOLEAN DEFAULT 0"),
             ("request_logs", "task_id", "TEXT"),
             ("request_logs", "updated_at", "TIMESTAMP"),
+            ("tasks", "generation_id", "TEXT"),
         ]
         
         for table, col, col_type in migrations:
@@ -772,6 +773,7 @@ class Database:
         await db.execute("CREATE INDEX IF NOT EXISTS idx_video_record_status ON video_records(status)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_upload_log_video_record_id ON upload_logs(video_record_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_token_email ON tokens(email)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_task_generation_id ON tasks(generation_id)")
         await self._ensure_request_logs_indexes(db)
         
         # MySQL: 移除 tasks 表的外键约束，允许 token_id 为 NULL
@@ -866,6 +868,7 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     task_id TEXT UNIQUE NOT NULL,
                     token_id INTEGER,
+                    generation_id TEXT,
                     model TEXT NOT NULL,
                     prompt TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'processing',
@@ -1090,6 +1093,7 @@ class Database:
             # Create indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_task_id ON tasks(task_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_task_status ON tasks(status)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_task_generation_id ON tasks(generation_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_token_active ON tokens(is_active)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_token_email ON tokens(email)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_character_cameo_id ON characters(cameo_id)")
@@ -1761,9 +1765,9 @@ class Database:
             try:
                 async with self._connect() as db:
                     cursor = await db.execute("""
-                        INSERT INTO tasks (task_id, token_id, model, prompt, status, progress)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    """, (task.task_id, task.token_id, task.model, task.prompt, task.status, task.progress))
+                        INSERT INTO tasks (task_id, token_id, generation_id, model, prompt, status, progress)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (task.task_id, task.token_id, task.generation_id, task.model, task.prompt, task.status, task.progress))
                     await db.commit()
                     return cursor.lastrowid
             except Exception as e:
@@ -1774,18 +1778,47 @@ class Database:
                 raise
     
     async def update_task(self, task_id: str, status: str, progress: float, 
-                         result_urls: Optional[str] = None, error_message: Optional[str] = None):
+                         result_urls: Optional[str] = None, error_message: Optional[str] = None,
+                         generation_id: Optional[str] = None):
         """Update task status"""
         max_retries = 5
         for attempt in range(max_retries):
             try:
                 async with self._connect() as db:
                     completed_at = datetime.now() if status in ["completed", "failed", "cancelled"] else None
-                    await db.execute("""
-                        UPDATE tasks 
-                        SET status = ?, progress = ?, result_urls = ?, error_message = ?, completed_at = ?
-                        WHERE task_id = ?
-                    """, (status, progress, result_urls, error_message, completed_at, task_id))
+                    updates = [
+                        "status = ?",
+                        "progress = ?",
+                        "result_urls = ?",
+                        "error_message = ?",
+                        "completed_at = ?",
+                    ]
+                    params = [status, progress, result_urls, error_message, completed_at]
+                    if generation_id is not None:
+                        updates.append("generation_id = ?")
+                        params.append(generation_id)
+                    params.append(task_id)
+                    query = f"UPDATE tasks SET {', '.join(updates)} WHERE task_id = ?"
+                    await db.execute(query, params)
+                    await db.commit()
+                    return
+            except Exception as e:
+                if self._should_retry_mysql_error(e):
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(0.2 * (attempt + 1))
+                        continue
+                raise
+
+    async def update_task_generation_id(self, task_id: str, generation_id: str):
+        """Update generation_id for a task"""
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                async with self._connect() as db:
+                    await db.execute(
+                        "UPDATE tasks SET generation_id = ? WHERE task_id = ?",
+                        (generation_id, task_id)
+                    )
                     await db.commit()
                     return
             except Exception as e:
@@ -1800,6 +1833,20 @@ class Database:
         async with self._connect(readonly=True) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,))
+            row = await cursor.fetchone()
+            if row:
+                return Task(**dict(row))
+            return None
+
+    async def get_task_by_generation_id(self, generation_id: str) -> Optional[Task]:
+        """Get task by generation_id (prefers rows with valid token_id)"""
+        async with self._connect(readonly=True) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM tasks WHERE generation_id = ? AND token_id IS NOT NULL AND token_id > 0 "
+                "ORDER BY created_at DESC LIMIT 1",
+                (generation_id,)
+            )
             row = await cursor.fetchone()
             if row:
                 return Task(**dict(row))

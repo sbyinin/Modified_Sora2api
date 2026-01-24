@@ -1,0 +1,94 @@
+Request URL
+https://sora.chatgpt.com/backend/characters/from-generation
+Request Method
+POST
+Status Code
+
+{"generation_id":"gen_01kcv3cggjfs6vnq7e7vb8zm15","character_id":null,"timestamps":[0,4]}
+{
+  "id": "6974758365e08191aed597da5e3fe0c9",
+  "url": "https://chatgpt.com/backend-api/estuary/public_content/enc/eyJpZCI6InBvc3RjYWNoZTp1c2VyLXpkZ3FwQlNDd1hjaFh6Z2dDbWlvQWdxUzoiLCJ0cyI6IjIwNDc3IiwicCI6InB5aSIsImNpZCI6IjEiLCJzaWciOiIyZjJmOWZiZjA0MTUwNTM0MjQxOWRlODdlOTdlNWZhYjYxZTc2YzNkY2MyZDYyMzBmZWQxYjU0MjAxYTRiYzUxIiwidiI6IjAiLCJnaXptb19pZCI6bnVsbCwiY3MiOm51bGwsImNwIjpudWxsLCJtYSI6bnVsbH0=",
+  "visibility": "private",
+  "user_id": "user-zdgqpBSCwXchXzggCmioAgqS",
+  "blocklist": [],
+  "blocklisted_profiles": [],
+  "allowlist": [],
+  "allowlisted_profiles": [],
+  "gender": null,
+  "instruction_set": null,
+  "safety_instruction_set": null,
+  "usage_restriction": null,
+  "status": "processing",
+  "character_id": null,
+  "status_message": null,
+  "progress_pct": null,
+  "display_name_hint": null,
+  "username_hint": null,
+  "profile_asset_pointer_hint": null,
+  "profile_asset_url": null,
+  "instruction_set_hint": null,
+  "safety_instruction_set_hint": null
+}
+
+Request URL
+https://sora.chatgpt.com/backend/project_y/cameos/in_progress/6974758365e08191aed597da5e3fe0c9
+Request Method
+GET
+{
+  "id": "6974758365e08191aed597da5e3fe0c9",
+  "url": "https://chatgpt.com/backend-api/estuary/public_content/enc/eyJpZCI6InBvc3RjYWNoZTp1c2VyLXpkZ3FwQlNDd1hjaFh6Z2dDbWlvQWdxUzoiLCJ0cyI6IjIwNDc3IiwicCI6InB5aSIsImNpZCI6IjEiLCJzaWciOiIyZjJmOWZiZjA0MTUwNTM0MjQxOWRlODdlOTdlNWZhYjYxZTc2YzNkY2MyZDYyMzBmZWQxYjU0MjAxYTRiYzUxIiwidiI6IjAiLCJnaXptb19pZCI6bnVsbCwiY3MiOm51bGwsImNwIjpudWxsLCJtYSI6bnVsbH0=",
+  "visibility": "private",
+  "user_id": "user-zdgqpBSCwXchXzggCmioAgqS",
+  "blocklist": [],
+  "blocklisted_profiles": [],
+  "allowlist": [],
+  "allowlisted_profiles": [],
+  "gender": null,
+  "instruction_set": null,
+  "safety_instruction_set": null,
+  "usage_restriction": null,
+  "status": "processing",
+  "character_id": null,
+  "status_message": "Processing...",
+  "progress_pct": 0.10279373891017278,
+  "display_name_hint": null,
+  "username_hint": null,
+  "profile_asset_pointer_hint": null,
+  "profile_asset_url": null,
+  "instruction_set_hint": null,
+  "safety_instruction_set_hint": null
+}
+{
+  "id": "6974758365e08191aed597da5e3fe0c9",
+  "url": "https://videos.openai.com/az/files/00000000-faa4-71f5-a6b3-4b781f41bb4e%2Fraw?se=2026-01-30T07%3A00%3A00Z&sp=r&sv=2024-08-04&sr=b&skoid=5e5fc900-07cf-43e7-ab5b-314c0d877bb0&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-01-24T04%3A44%3A54Z&ske=2026-01-31T04%3A49%3A54Z&sks=b&skv=2024-08-04&sig=/4rDkky26yb6Uibj2uIcPNfSUhk4BGVR6zQHezXt08s%3D&ac=oaisdmntprcentralus",
+  "visibility": "private",
+  "user_id": "user-zdgqpBSCwXchXzggCmioAgqS",
+  "blocklist": [],
+  "blocklisted_profiles": [],
+  "allowlist": [],
+  "allowlisted_profiles": [],
+  "gender": null,
+  "instruction_set": null,
+  "safety_instruction_set": null,
+  "usage_restriction": null,
+  "status": "pending",
+  "character_id": null,
+  "status_message": "Completed",
+  "progress_pct": 0.7638423463996709,
+  "display_name_hint": "Professor Marvelberry",
+  "username_hint": "cai67213.marvelberr",
+  "profile_asset_pointer_hint": "sediment://file_00000000e52871f7bf10304994ceacd8",
+  "profile_asset_url": "https://oaisdmntprsouthcentralus.blob.core.windows.net/files/00000000-e528-71f7-bf10-304994ceacd8/raw?se=2026-01-24T07%3A37%3A36Z&sp=r&sv=2024-08-04&sr=b&scid=019beeeb-09c1-7061-b261-5b3da9397644&skoid=9ccea605-1409-4478-82eb-9c83b25dc1b0&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-01-23T22%3A07%3A08Z&ske=2026-01-24T22%3A07%3A08Z&sks=b&skv=2024-08-04&sig=29v/s9vm%2BZOYV8RefJlqNyeala1nhhCg6k83fDwSfnk%3D",
+  "instruction_set_hint": "A whimsical scientist with a taste for the extraordinary, she conducts delicious experiments that defy gravity and expectation. Speaks with enthusiastic curiosity, always with a spark in her eye, her inventive flair mixing science and everyday magic in every gesture.",
+  "safety_instruction_set_hint": null
+}
+
+Request URL
+https://sora.chatgpt.com/backend/project_y/profile/username/check
+Request Method
+POST
+{"username":"cai67213.marvelberr"}
+
+{
+  "available": true
+}

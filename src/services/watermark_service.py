@@ -4,6 +4,7 @@
 """
 import re
 import asyncio
+import errno
 from typing import Optional, Dict, Any
 from ..core.database import Database
 from ..core.config import config
@@ -21,6 +22,40 @@ class WatermarkService:
         self._cache_time = 0
         self._cache_ttl = 10  # 缓存10秒
         self._lambda_manager = None
+        self._session = None
+        self._session_lock = asyncio.Lock()
+        self._max_concurrency = self._normalize_int(config.watermark_free_max_concurrency, default=2)
+        self._semaphore = asyncio.Semaphore(self._max_concurrency)
+
+    def _normalize_int(self, value: Optional[int], default: int, minimum: int = 1) -> int:
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError):
+            return default
+        return normalized if normalized >= minimum else default
+
+    async def _get_session(self):
+        from curl_cffi.requests import AsyncSession
+        if self._session is not None:
+            return self._session
+        async with self._session_lock:
+            if self._session is None:
+                self._session = AsyncSession()
+        return self._session
+
+    async def close(self):
+        """Close shared HTTP session"""
+        if self._session is None:
+            return
+        async with self._session_lock:
+            if self._session is not None:
+                self._session.close()
+                self._session = None
+
+    def _is_fd_exhausted_error(self, exc: Exception) -> bool:
+        if isinstance(exc, OSError) and getattr(exc, "errno", None) in (errno.EMFILE, errno.ENFILE):
+            return True
+        return "too many open files" in str(exc).lower()
     
     async def _get_lambda_manager(self):
         """获取 Lambda manager 实例"""
@@ -75,7 +110,6 @@ class WatermarkService:
     
     async def refresh_token(self, account: Dict) -> tuple:
         """刷新账号的 access_token"""
-        from curl_cffi.requests import AsyncSession
         from ..core.http_utils import get_random_fingerprint
         
         url = "https://auth.openai.com/oauth/token"
@@ -86,15 +120,15 @@ class WatermarkService:
             "refresh_token": account['refresh_token']
         }
         
-        async with AsyncSession() as session:
-            response = await session.post(
-                url, 
-                json=payload, 
-                timeout=20,
-                impersonate=get_random_fingerprint()
-            )
-            response.raise_for_status()
-            data = response.json()
+        session = await self._get_session()
+        response = await session.post(
+            url,
+            json=payload,
+            timeout=20,
+            impersonate=get_random_fingerprint()
+        )
+        response.raise_for_status()
+        data = response.json()
         
         # 更新数据库
         await self.db.update_watermark_account_usage(
@@ -109,7 +143,6 @@ class WatermarkService:
     
     async def _make_api_call_direct(self, video_id: str, account: Dict) -> Dict:
         """直接请求 Sora API"""
-        from curl_cffi.requests import AsyncSession
         from ..core.http_utils import get_random_fingerprint
         
         api_url = f"https://sora.chatgpt.com/backend/project_y/post/{video_id}"
@@ -122,15 +155,15 @@ class WatermarkService:
             'User-Agent': 'Sora/1.2025.308'
         }
         
-        async with AsyncSession() as session:
-            response = await session.get(
-                api_url, 
-                headers=headers, 
-                timeout=20,
-                impersonate=get_random_fingerprint()
-            )
-            response.raise_for_status()
-            return response.json()
+        session = await self._get_session()
+        response = await session.get(
+            api_url,
+            headers=headers,
+            timeout=20,
+            impersonate=get_random_fingerprint()
+        )
+        response.raise_for_status()
+        return response.json()
     
     async def _make_api_call_lambda(self, video_id: str, account: Dict) -> Dict:
         """通过 Lambda 代理请求"""
@@ -157,6 +190,11 @@ class WatermarkService:
                 "error": "..."  # 失败时
             }
         """
+        async with self._semaphore:
+            return await self._get_download_link_inner(url_or_id)
+
+    async def _get_download_link_inner(self, url_or_id: str) -> Dict[str, Any]:
+        """获取无水印下载链接（内部实现）"""
         # 从数据库获取去水印配置
         watermark_config = await self.db.get_watermark_free_config()
         
@@ -222,6 +260,11 @@ class WatermarkService:
                 last_error = str(e)
                 error_str = str(e).lower()
                 debug_logger.log_error(f"内置解析失败 (尝试 {attempt + 1}): {last_error}")
+
+                if self._is_fd_exhausted_error(e):
+                    last_error = "Too many open files"
+                    debug_logger.log_error("Detected local FD exhaustion, aborting watermark retries.")
+                    break
                 
                 # 检查是否是 401 错误，尝试刷新 token
                 if '401' in error_str and account.get('refresh_token'):
@@ -275,7 +318,6 @@ class WatermarkService:
             return {"success": False, "error": "自定义解析服务器访问密钥未配置"}
         
         try:
-            from curl_cffi.requests import AsyncSession
             from ..core.http_utils import get_random_fingerprint
             
             # 构建请求URL
@@ -294,16 +336,16 @@ class WatermarkService:
             
             debug_logger.log_info(f"自定义解析请求: {api_url}")
             
-            async with AsyncSession() as session:
-                response = await session.post(
-                    api_url,
-                    headers=headers,
-                    json=payload,
-                    timeout=30,
-                    impersonate=get_random_fingerprint()
-                )
-                response.raise_for_status()
-                data = response.json()
+            session = await self._get_session()
+            response = await session.post(
+                api_url,
+                headers=headers,
+                json=payload,
+                timeout=30,
+                impersonate=get_random_fingerprint()
+            )
+            response.raise_for_status()
+            data = response.json()
             
             if data.get('success') and data.get('download_link'):
                 debug_logger.log_info("自定义解析成功")

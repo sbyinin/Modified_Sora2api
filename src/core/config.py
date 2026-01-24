@@ -150,6 +150,11 @@ class Config:
         self._config["cache"]["enabled"] = enabled
 
     @property
+    def cache_max_concurrency(self) -> int:
+        """Get cache download max concurrency"""
+        return self._config.get("cache", {}).get("max_concurrency", 3)
+
+    @property
     def image_timeout(self) -> int:
         """Get image generation timeout in seconds"""
         return self._config.get("generation", {}).get("image_timeout", 300)
@@ -196,6 +201,11 @@ class Config:
     def watermark_free_custom_token(self) -> str:
         """Get custom parse server access token"""
         return self._config.get("watermark_free", {}).get("custom_parse_token", "")
+
+    @property
+    def watermark_free_max_concurrency(self) -> int:
+        """Get watermark-free flow max concurrency"""
+        return self._config.get("watermark_free", {}).get("max_concurrency", 2)
 
     @property
     def at_auto_refresh_enabled(self) -> bool:
@@ -342,6 +352,33 @@ class Config:
     def redis_lock_timeout(self) -> int:
         """Get Redis lock timeout in seconds"""
         return self._config.get("redis", {}).get("lock_timeout", 300)
+
+    # ==================== Lambda Configuration ====================
+
+    @property
+    def lambda_max_concurrency(self) -> int:
+        """Get max concurrent Lambda requests"""
+        return self._config.get("lambda", {}).get("max_concurrency", 5)
+
+    @property
+    def lambda_max_connections(self) -> int:
+        """Get Lambda HTTP client max connections"""
+        return self._config.get("lambda", {}).get("max_connections", 20)
+
+    @property
+    def lambda_max_keepalive_connections(self) -> int:
+        """Get Lambda HTTP client max keepalive connections"""
+        return self._config.get("lambda", {}).get("max_keepalive_connections", 10)
+
+    @property
+    def lambda_keepalive_expiry(self) -> float:
+        """Get Lambda HTTP client keepalive expiry in seconds"""
+        return self._config.get("lambda", {}).get("keepalive_expiry", 20.0)
+
+    @property
+    def lambda_timeout(self) -> float:
+        """Get Lambda HTTP client timeout in seconds"""
+        return self._config.get("lambda", {}).get("timeout", 30.0)
 
     # Legacy aliases for backward compatibility
     @property

@@ -116,11 +116,11 @@ curl -X GET "http://your-server/v1/models" \
 | `model` | string | 是 | 模型 ID |
 | `messages` | array | 是 | 消息数组 |
 | `stream` | boolean | 否 | 是否流式输出，默认 false |
-| `image` | string | 否 | Base64 编码的参考图片（图生视频） |
+| `image` | string | 否 | Base64 编码的参考图片（图生视频；配合 `character_options` 可图生角色卡） |
 | `video` | string | 否 | Base64 编码的视频（角色创建） |
 | `remix_target_id` | string | 否 | Sora 分享链接视频 ID（用于 remix） |
 | `style_id` | string | 否 | 视频风格 |
-| `character_options` | object | 否 | 角色创建选项 |
+| `character_options` | object | 否 | 角色创建选项（传图可触发图生角色卡） |
 
 **character_options 对象字段:**
 
@@ -189,6 +189,30 @@ curl -X POST "http://your-server/v1/chat/completions" \
     "stream": true
   }'
 ```
+
+**请求示例 (图生角色卡):**
+```bash
+curl -X POST "http://your-server/v1/chat/completions" \
+  -H "Authorization: Bearer your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "sora-video-10s",
+    "messages": [
+      {"role": "user", "content": "Create a character from this image"}
+    ],
+    "image": "base64_encoded_image_data",
+    "character_options": {
+      "timestamps": "0,3",
+      "username": "my_character",
+      "display_name": "My Character"
+    },
+    "stream": true
+  }'
+```
+
+说明:
+- `image` + `character_options` 会触发图生角色卡流程（先图生视频，再创建角色卡）。
+- 请使用 `stream=true` 获取完整结果。
 
 **流式响应格式 (SSE):**
 ```
@@ -353,6 +377,10 @@ curl -X GET "http://your-server/v1/videos/sora-2-abc123def456" \
 | `error` | object | 错误信息 `{message, code}`（失败时） |
 | `metadata` | object | 扩展元数据（可选） |
 
+metadata 常见字段:
+- `generation_id`: 生成 ID（gen_xxx，用于角色卡创建）
+- `permalink`: Sora 分享链接（如有）
+
 ---
 
 ### GET /v1/videos/{video_id}/content
@@ -508,22 +536,26 @@ curl -X POST "http://your-server/v1/images/generations" \
 
 ### POST /v1/characters
 
-从视频创建角色（角色卡）。
+从视频或图片创建角色（角色卡）。图片会先生成短视频，再用 generation_id 创建角色卡（粘性 token）。
 
 **请求参数:**
 
 | 参数 | 类型 | 必填 | 描述 |
 |------|------|------|------|
 | `model` | string | 否 | 视频模型，默认 `sora-video-10s` |
+| `prompt` | string | 否 | 图生角色卡时的提示词（可选） |
 | `video` | file | 是* | 视频文件（multipart/form-data） |
 | `video_base64` | string | 是* | Base64 编码的视频 |
-| `timestamps` | string | 否 | 视频时间戳，如 `0,3`；留空默认 `0,3` |
+| `input_reference` | file | 是* | 参考图片文件（图生角色卡） |
+| `input_image` | string | 是* | Base64 编码的参考图片（图生角色卡） |
+| `style_id` | string | 否 | 视频风格（仅图生角色卡时生效） |
+| `timestamps` | string / array | 否 | 时间戳，如 `0,3` 或 `[0,3]` |
 | `username` | string | 否 | 自定义角色用户名（不含 `@`） |
 | `display_name` | string | 否 | 自定义角色显示名称 |
 | `instruction_set` | string | 否 | 角色指令集（文本） |
 | `safety_instruction_set` | string | 否 | 安全指令集（文本） |
 
-*注：`video` 和 `video_base64` 二选一
+*注：`video`/`video_base64` 与 `input_reference`/`input_image` 二选一
 
 **请求示例 (multipart/form-data):**
 ```bash
@@ -554,6 +586,21 @@ curl -X POST "http://your-server/v1/characters" \
   }'
 ```
 
+**请求示例 (图生角色卡 / JSON):**
+```bash
+curl -X POST "http://your-server/v1/characters" \
+  -H "Authorization: Bearer your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "sora-video-10s",
+    "prompt": "Create a neutral reference video for this character",
+    "input_image": "base64_encoded_image_data",
+    "timestamps": [0, 3],
+    "username": "my_character",
+    "display_name": "My Character"
+  }'
+```
+
 **响应示例:**
 ```json
 {
@@ -566,6 +613,59 @@ curl -X POST "http://your-server/v1/characters" \
     "username": "my_character",
     "display_name": "My Character",
     "message": "Character created successfully"
+  }
+}
+```
+
+备注:
+- 图生角色卡时，`data.generation_id` 会返回生成 ID（`gen_xxx`）。
+
+### POST /v1/characters/from-generation
+
+从 `generation_id` 创建角色（角色卡）。用于“先视频生成，再出角色卡”的流程。
+
+**说明:**
+- 使用 **粘性 token**：会绑定到创建该 generation 的账号，避免随机换号。
+- 用户名可用性检查使用 `/project_y/profile/username/check`，逻辑与直接角色创建一致。
+
+**请求参数:**
+
+| 参数 | 类型 | 必填 | 描述 |
+|------|------|------|------|
+| `generation_id` | string | 是 | 视频生成的 generation ID（如 `gen_xxx`） |
+| `timestamps` | string / array | 否 | 时间戳，支持 `"0,4"` 或 `[0,4]` |
+| `character_id` | string | 否 | 可选：更新已有角色 |
+| `username` | string | 否 | 自定义角色用户名（不含 `@`） |
+| `display_name` | string | 否 | 自定义角色显示名称 |
+| `instruction_set` | string | 否 | 角色指令集（文本） |
+| `safety_instruction_set` | string | 否 | 安全指令集（文本） |
+
+**请求示例 (JSON):**
+```bash
+curl -X POST "http://your-server/v1/characters/from-generation" \
+  -H "Authorization: Bearer your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "generation_id": "gen_01kxxxx",
+    "timestamps": [0, 4],
+    "username": "my_character",
+    "display_name": "My Character"
+  }'
+```
+
+**响应示例:**
+```json
+{
+  "id": "char_xxxxxxxxxxxx",
+  "object": "character",
+  "created": 1702388400,
+  "model": "from-generation",
+  "data": {
+    "cameo_id": "ch_xxxxxxxxxxxx",
+    "character_id": "char_xxxxxxxxxxxx",
+    "username": "my_character",
+    "display_name": "My Character",
+    "generation_id": "gen_01kxxxx"
   }
 }
 ```

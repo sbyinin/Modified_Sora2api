@@ -53,6 +53,7 @@ mask_token = true
 enabled = false
 timeout = 600
 base_url = "http://127.0.0.1:8000"
+max_concurrency = 3
 
 [generation]
 image_timeout = 300
@@ -71,6 +72,7 @@ watermark_free_enabled = true
 parse_method = "builtin"
 custom_parse_url = ""
 custom_parse_token = ""
+max_concurrency = 2
 
 [token_refresh]
 at_auto_refresh_enabled = false
@@ -79,3 +81,8 @@ at_auto_refresh_enabled = false
 enabled = false
 api_url = ""
 api_key = ""
+max_concurrency = 5
+max_connections = 20
+max_keepalive_connections = 10
+keepalive_expiry = 20
+timeout = 30

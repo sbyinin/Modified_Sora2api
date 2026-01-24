@@ -28,6 +28,33 @@ class FileCache:
         self.default_timeout = default_timeout
         self.proxy_manager = proxy_manager
         self._cleanup_task = None
+        self._session = None
+        self._session_lock = asyncio.Lock()
+        self._download_semaphore = asyncio.Semaphore(self._normalize_int(config.cache_max_concurrency, 3))
+
+    def _normalize_int(self, value: Optional[int], default: int, minimum: int = 1) -> int:
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError):
+            return default
+        return normalized if normalized >= minimum else default
+
+    async def _get_session(self) -> AsyncSession:
+        if self._session is not None:
+            return self._session
+        async with self._session_lock:
+            if self._session is None:
+                self._session = AsyncSession()
+        return self._session
+
+    async def close(self):
+        """Close shared HTTP session"""
+        if self._session is None:
+            return
+        async with self._session_lock:
+            if self._session is not None:
+                self._session.close()
+                self._session = None
         
     async def start_cleanup_task(self):
         """Start background cleanup task"""
@@ -149,8 +176,8 @@ class FileCache:
             if self.proxy_manager:
                 proxy_url = await self.proxy_manager.get_proxy_url()
 
-            # Download with proxy support
-            async with AsyncSession() as session:
+            session = await self._get_session()
+            async with self._download_semaphore:
                 kwargs = {"timeout": 60}
                 if proxy_url:
                     kwargs["proxy"] = proxy_url
