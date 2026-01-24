@@ -17,7 +17,7 @@ Status Code
   "gender": null,
   "instruction_set": null,
   "safety_instruction_set": null,
-  "usage_restriction": null,
+  "usage_restriction": null, 
   "status": "processing",
   "character_id": null,
   "status_message": null,

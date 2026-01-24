@@ -612,7 +612,7 @@ class Database:
         
         使用版本号机制，只在版本变化时执行完整迁移检查
         """
-        CURRENT_DB_VERSION = 12  # 增加此版本号以触发迁移
+        CURRENT_DB_VERSION = 13  # 增加此版本号以触发迁移
         
         db = await self._get_connection()
         try:
@@ -636,8 +636,15 @@ class Database:
             else:
                 db_version = 1
             
-            # 如果版本相同，跳过迁移检查
+            # 即使版本相同，也检查关键列是否存在
             if db_version >= CURRENT_DB_VERSION:
+                # 确保 tasks.generation_id 列存在
+                if await self._table_exists(db, "tasks") and not await self._column_exists(db, "tasks", "generation_id"):
+                    try:
+                        await db.execute("ALTER TABLE tasks ADD COLUMN generation_id TEXT")
+                        await db.commit()
+                    except Exception:
+                        pass
                 await self._ensure_config_rows(db, config_dict)
                 await self._ensure_token_stats_unique_index(db)
                 await self._ensure_request_logs_indexes(db)
@@ -694,8 +701,13 @@ class Database:
             if await self._table_exists(db, table):
                 try:
                     await db.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
-                except Exception:
-                    pass  # 列已存在，忽略
+                    await db.commit()
+                except Exception as e:
+                    # 列已存在或其他错误，回滚并继续
+                    try:
+                        await db._conn.rollback() if hasattr(db, '_conn') else None
+                    except:
+                        pass
         
         # 创建新表
         new_tables = [
@@ -773,7 +785,9 @@ class Database:
         await db.execute("CREATE INDEX IF NOT EXISTS idx_video_record_status ON video_records(status)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_upload_log_video_record_id ON upload_logs(video_record_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_token_email ON tokens(email)")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_task_generation_id ON tasks(generation_id)")
+        # Only create index if generation_id column exists
+        if await self._column_exists(db, "tasks", "generation_id"):
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_task_generation_id ON tasks(generation_id)")
         await self._ensure_request_logs_indexes(db)
         
         # MySQL: 移除 tasks 表的外键约束，允许 token_id 为 NULL
