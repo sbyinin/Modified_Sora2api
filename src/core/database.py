@@ -1104,10 +1104,20 @@ class Database:
                 )
             """)
 
+            # Ensure generation_id column exists in tasks table (for existing databases)
+            if not await self._column_exists(db, "tasks", "generation_id"):
+                try:
+                    await db.execute("ALTER TABLE tasks ADD COLUMN generation_id TEXT")
+                    await db.commit()
+                except Exception:
+                    pass
+
             # Create indexes
             await db.execute("CREATE INDEX IF NOT EXISTS idx_task_id ON tasks(task_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_task_status ON tasks(status)")
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_task_generation_id ON tasks(generation_id)")
+            # Only create generation_id index if the column exists
+            if await self._column_exists(db, "tasks", "generation_id"):
+                await db.execute("CREATE INDEX IF NOT EXISTS idx_task_generation_id ON tasks(generation_id)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_token_active ON tokens(is_active)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_token_email ON tokens(email)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_character_cameo_id ON characters(cameo_id)")
