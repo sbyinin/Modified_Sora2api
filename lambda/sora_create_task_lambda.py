@@ -328,9 +328,10 @@ def session_token_to_access_token(session_token):
     """
     url = "https://sora.chatgpt.com/api/auth/session"
     headers = {
+        "Cookie": f"__Secure-next-auth.session-token={session_token.strip()}",
         "Accept": "application/json",
-        "Content-Type": "application/json",
-        "Cookie": f"__Secure-next-auth.session-token={session_token.strip()}"
+        "Origin": "https://sora.chatgpt.com",
+        "Referer": "https://sora.chatgpt.com/"
     }
     
     status, body, _ = http_request(url, "GET", None, headers, timeout=30)

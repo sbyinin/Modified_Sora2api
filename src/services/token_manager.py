@@ -619,41 +619,17 @@ class TokenManager:
                 raise Exception(f"Failed to activate Sora2: {response.status_code}")
 
     async def st_to_at(self, session_token: str) -> dict:
-        """Convert Session Token to Access Token"""
+        """Convert Session Token to Access Token
+        
+        注意: st_to_at 不走 Lambda，因为 Lambda 无代理会被 Cloudflare 拦截
+        """
         # 清理 session_token，去除首尾空白字符
         session_token = session_token.strip()
         
         debug_logger.log_info(f"[ST_TO_AT] 开始转换 Session Token 为 Access Token...")
         debug_logger.log_info(f"[ST_TO_AT] ST长度: {len(session_token)}, 前20字符: {session_token[:20]}...")
         
-        # 检查是否使用 Lambda
-        use_lambda = await self._should_use_lambda()
-        if use_lambda:
-            debug_logger.log_info(f"[ST_TO_AT] 🚀 使用 Lambda 代理请求")
-            try:
-                lambda_mgr = await self._get_lambda_manager()
-                data = await lambda_mgr.st_to_at(session_token)
-                
-                access_token = data.get("accessToken")
-                email = data.get("user", {}).get("email") if data.get("user") else None
-                expires = data.get("expires")
-                
-                if not access_token:
-                    debug_logger.log_info(f"[ST_TO_AT] ❌ Lambda 响应中缺少 accessToken 字段")
-                    raise ValueError("Missing accessToken in Lambda response")
-                
-                debug_logger.log_info(f"[ST_TO_AT] ✅ Lambda ST 转换成功")
-                return {
-                    "access_token": access_token,
-                    "email": email,
-                    "expires": expires
-                }
-            except Exception as e:
-                debug_logger.log_info(f"[ST_TO_AT] ❌ Lambda 请求失败: {str(e)}")
-                # Lambda 启用时不回退到直接请求，直接抛出错误
-                raise Exception(f"Lambda ST转换失败: {str(e)}")
-        
-        # 直接请求
+        # 直接请求（不走 Lambda，避免 Cloudflare 拦截）
         proxy_url = await self.proxy_manager.get_proxy_url()
 
         async with AsyncSession() as session:
@@ -731,6 +707,8 @@ class TokenManager:
         Args:
             refresh_token: Refresh Token
             client_id: Client ID (optional, uses default if not provided)
+        
+        注意: rt_to_at 不走 Lambda，因为 Lambda 无代理会被 Cloudflare 拦截
         """
         # 清理 refresh_token，去除首尾空白字符
         refresh_token = refresh_token.strip()
@@ -742,34 +720,7 @@ class TokenManager:
         debug_logger.log_info(f"[RT_TO_AT] RT长度: {len(refresh_token)}, 前20字符: {refresh_token[:20]}...")
         debug_logger.log_info(f"[RT_TO_AT] 使用 Client ID: {effective_client_id[:20]}...")
         
-        # 检查是否使用 Lambda
-        use_lambda = await self._should_use_lambda()
-        if use_lambda:
-            debug_logger.log_info(f"[RT_TO_AT] 🚀 使用 Lambda 代理请求")
-            try:
-                lambda_mgr = await self._get_lambda_manager()
-                data = await lambda_mgr.rt_to_at(refresh_token, effective_client_id)
-                
-                access_token = data.get("access_token")
-                new_refresh_token = data.get("refresh_token")
-                expires_in = data.get("expires_in")
-                
-                if not access_token:
-                    debug_logger.log_info(f"[RT_TO_AT] ❌ Lambda 响应中缺少 access_token 字段")
-                    raise ValueError("Missing access_token in Lambda response")
-                
-                debug_logger.log_info(f"[RT_TO_AT] ✅ Lambda RT 转换成功")
-                return {
-                    "access_token": access_token,
-                    "refresh_token": new_refresh_token,
-                    "expires_in": expires_in
-                }
-            except Exception as e:
-                debug_logger.log_info(f"[RT_TO_AT] ❌ Lambda 请求失败: {str(e)}")
-                # Lambda 启用时不回退到直接请求，直接抛出错误
-                raise Exception(f"Lambda RT转换失败: {str(e)}")
-        
-        # 直接请求
+        # 直接请求（不走 Lambda，避免 Cloudflare 拦截）
         proxy_url = await self.proxy_manager.get_proxy_url()
 
         async with AsyncSession() as session:
