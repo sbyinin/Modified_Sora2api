@@ -326,7 +326,7 @@ def session_token_to_access_token(session_token):
     Returns:
         (status_code, response_body)
     """
-    url = "https://chatgpt.com/api/auth/session"
+    url = "https://sora.chatgpt.com/api/auth/session"
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
