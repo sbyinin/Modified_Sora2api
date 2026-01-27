@@ -1419,7 +1419,8 @@ class GenerationHandler:
                                 await self.db.update_task(
                                     task_id, "completed", 100.0,
                                     result_urls=json.dumps([local_url]),
-                                    generation_id=generation_id
+                                    generation_id=generation_id,
+                                    permalink=permalink if isinstance(permalink, str) and permalink else None
                                 )
                                 try:
                                     cache_extra = {"token_id": token_id} if token_id is not None else {}
