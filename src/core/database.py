@@ -645,6 +645,13 @@ class Database:
                         await db.commit()
                     except Exception:
                         pass
+                # 确保 tasks.permalink 列存在
+                if await self._table_exists(db, "tasks") and not await self._column_exists(db, "tasks", "permalink"):
+                    try:
+                        await db.execute("ALTER TABLE tasks ADD COLUMN permalink TEXT")
+                        await db.commit()
+                    except Exception:
+                        pass
                 await self._ensure_config_rows(db, config_dict)
                 await self._ensure_token_stats_unique_index(db)
                 await self._ensure_request_logs_indexes(db)
@@ -695,6 +702,7 @@ class Database:
             ("request_logs", "task_id", "TEXT"),
             ("request_logs", "updated_at", "TIMESTAMP"),
             ("tasks", "generation_id", "TEXT"),
+            ("tasks", "permalink", "TEXT"),
         ]
         
         for table, col, col_type in migrations:
@@ -883,6 +891,7 @@ class Database:
                     task_id TEXT UNIQUE NOT NULL,
                     token_id INTEGER,
                     generation_id TEXT,
+                    permalink TEXT,
                     model TEXT NOT NULL,
                     prompt TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'processing',
@@ -1803,7 +1812,7 @@ class Database:
     
     async def update_task(self, task_id: str, status: str, progress: float, 
                          result_urls: Optional[str] = None, error_message: Optional[str] = None,
-                         generation_id: Optional[str] = None):
+                         generation_id: Optional[str] = None, permalink: Optional[str] = None):
         """Update task status"""
         max_retries = 5
         for attempt in range(max_retries):
@@ -1821,6 +1830,9 @@ class Database:
                     if generation_id is not None:
                         updates.append("generation_id = ?")
                         params.append(generation_id)
+                    if permalink is not None:
+                        updates.append("permalink = ?")
+                        params.append(permalink)
                     params.append(task_id)
                     query = f"UPDATE tasks SET {', '.join(updates)} WHERE task_id = ?"
                     await db.execute(query, params)

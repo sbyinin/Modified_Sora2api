@@ -60,6 +60,7 @@ class Task(BaseModel):
     task_id: str
     token_id: Optional[int] = None  # Can be None for async tasks before token assignment
     generation_id: Optional[str] = None  # Sora generation ID (gen_xxx)
+    permalink: Optional[str] = None  # Sora share link (if available)
     model: str
     prompt: str
     status: str = "processing"  # processing/completed/failed/cancelled

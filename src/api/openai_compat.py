@@ -805,14 +805,16 @@ async def _process_video_generation_v2(video_id: str):
                 "completed",
                 100.0,
                 result_urls=result_url,
-                generation_id=task_info.get("generation_id")
+                generation_id=task_info.get("generation_id"),
+                permalink=task_info.get("permalink")
             )
         else:
             await db.update_task(
                 video_id,
                 "completed",
                 100.0,
-                generation_id=task_info.get("generation_id")
+                generation_id=task_info.get("generation_id"),
+                permalink=task_info.get("permalink")
             )
         
         print(f"[VideoTask] {video_id}: Task completed successfully. Status in memory: {task_info['status']}")
@@ -1506,6 +1508,8 @@ async def get_video(
     metadata = {}
     if task.generation_id:
         metadata["generation_id"] = task.generation_id
+    if task.permalink:
+        metadata["permalink"] = task.permalink
     if metadata:
         response["metadata"] = metadata
     
