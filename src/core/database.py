@@ -1426,25 +1426,31 @@ class Database:
             # Get IDs of disabled tokens first
             cursor = await db.execute("SELECT id FROM tokens WHERE is_active = 0")
             rows = await cursor.fetchall()
-            token_ids = [row[0] for row in rows]
+            # Handle both MySQL (dict) and SQLite (tuple) row formats
+            token_ids = []
+            for row in rows:
+                if isinstance(row, dict):
+                    token_ids.append(row['id'])
+                else:
+                    token_ids.append(row[0])
             
             if not token_ids:
                 return 0
             
-            # Build placeholder string for IN clause
+            # Build placeholder string for IN clause (will be converted to %s for MySQL)
             placeholders = ','.join(['?' for _ in token_ids])
             
             # Delete related records first
-            await db.execute(f"DELETE FROM request_logs WHERE token_id IN ({placeholders})", token_ids)
-            await db.execute(f"DELETE FROM characters WHERE token_id IN ({placeholders})", token_ids)
-            await db.execute(f"DELETE FROM video_records WHERE token_id IN ({placeholders})", token_ids)
-            await db.execute(f"DELETE FROM token_stats WHERE token_id IN ({placeholders})", token_ids)
+            await db.execute(f"DELETE FROM request_logs WHERE token_id IN ({placeholders})", tuple(token_ids))
+            await db.execute(f"DELETE FROM characters WHERE token_id IN ({placeholders})", tuple(token_ids))
+            await db.execute(f"DELETE FROM video_records WHERE token_id IN ({placeholders})", tuple(token_ids))
+            await db.execute(f"DELETE FROM token_stats WHERE token_id IN ({placeholders})", tuple(token_ids))
             
             # Set token_id to NULL for tasks
-            await db.execute(f"UPDATE tasks SET token_id = NULL WHERE token_id IN ({placeholders})", token_ids)
+            await db.execute(f"UPDATE tasks SET token_id = NULL WHERE token_id IN ({placeholders})", tuple(token_ids))
             
             # Delete tokens
-            await db.execute(f"DELETE FROM tokens WHERE id IN ({placeholders})", token_ids)
+            await db.execute(f"DELETE FROM tokens WHERE id IN ({placeholders})", tuple(token_ids))
             await db.commit()
             
             return len(token_ids)
