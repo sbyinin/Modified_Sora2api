@@ -73,8 +73,10 @@ class SentinelTokenManager:
     async def _get_proxy_manager(self):
         """获取 Proxy manager"""
         if self._proxy_manager is None:
-            from .proxy_manager import proxy_manager
-            self._proxy_manager = proxy_manager
+            from .proxy_manager import ProxyManager
+            from ..core.database import Database
+            db = Database()
+            self._proxy_manager = ProxyManager(db)
         return self._proxy_manager
     
     async def _get_browser(self, proxy_url: Optional[str] = None):
