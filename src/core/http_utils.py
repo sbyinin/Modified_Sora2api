@@ -313,4 +313,6 @@ def build_simple_headers(token: str) -> dict:
         "Origin": "https://sora.chatgpt.com",
         "Referer": "https://sora.chatgpt.com/",
         "User-Agent": get_random_user_agent(),
+        "oai-package-name": SORA_APP_PACKAGE_NAME,
+        "oai-client-type": SORA_APP_CLIENT_TYPE,
     }

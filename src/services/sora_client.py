@@ -27,6 +27,7 @@ from ..core.http_utils import (
     generate_id,
     get_pow_token_mock,
 )
+from .sentinel_token_manager import sentinel_token_manager
 
 
 class SoraClient:
@@ -86,51 +87,28 @@ class SoraClient:
 
     async def _generate_sentinel_token(
         self,
-        session: AsyncSession,
-        user_agent: str,
-        proxy_url: Optional[str],
-        fingerprint: str,
-        auth_token: Optional[str] = None,
         flow: str = "sora_2_create_task",
-        token_id: Optional[int] = None
+        token_id: Optional[int] = None,
+        force_refresh: bool = False
     ) -> str:
         """
-        尝试通过 /sentinel/req 生成 openai-sentinel-token，失败时抛出异常
+        通过 sentinel_token_manager 获取 openai-sentinel-token
+        
+        使用 Playwright + 代理池方式获取，支持高并发缓存
         """
-        if proxy_url is None:
-            proxy_url = await self.proxy_manager.get_proxy_url(token_id)
-
-        pow_token = get_pow_token_mock(user_agent=user_agent)
-        payload = {"p": pow_token, "flow": flow, "id": generate_id()}
-        headers = {
-            "Accept": "application/json, text/plain, */*",
-            "Origin": "https://chatgpt.com",
-            "Referer": "https://chatgpt.com/",
-            "User-Agent": user_agent,
-        }
-        if auth_token:
-            headers["Authorization"] = f"Bearer {auth_token}"
-
         try:
-            response = await session.post(
-                "https://chatgpt.com/backend-api/sentinel/req",
-                json=payload,
-                headers=headers,
-                timeout=10,
-                proxy=proxy_url,
-                impersonate=fingerprint,
+            return await sentinel_token_manager.get_sentinel_token(
+                force_refresh=force_refresh,
+                flow=flow,
+                token_id=token_id
             )
-            if response.status_code != 200:
-                raise Exception(f"sentinel/req failed: {response.status_code} - {response.text}")
-            resp_json = response.json()
-            return build_openai_sentinel_token(flow, resp_json, pow_token, user_agent=user_agent)
         except Exception as exc:
             debug_logger.log_error(
-                error_message=f"sentinel/req failed: {exc}",
-                status_code=getattr(getattr(exc, "response", None), "status_code", None),
+                error_message=f"sentinel token failed: {exc}",
+                status_code=None,
                 response_text=str(exc),
             )
-            raise Exception(f"sentinel/req 请求失败: {exc}")
+            raise Exception(f"获取 sentinel token 失败: {exc}")
 
     @staticmethod
     def is_storyboard_prompt(prompt: str) -> bool:
@@ -268,14 +246,13 @@ class SoraClient:
         if cf_state.is_valid:
             cf_state.apply_to_session(session)
 
+        # 通过 sentinel_token_manager 获取 sentinel token（高并发缓存 + Playwright）
         sentinel = await self._generate_sentinel_token(
-            session=session,
-            user_agent=user_agent,
-            proxy_url=proxy_url,
-            fingerprint=fingerprint,
-            auth_token=token,
+            flow="sora_2_create_task",
             token_id=token_id,
+            force_refresh=False
         ) if add_sentinel_token else None
+        sentinel_refreshed = False  # 标记是否已刷新过 sentinel token
         content_type = None if multipart else "application/json"
         
         headers = build_sora_headers(
@@ -518,6 +495,25 @@ class SoraClient:
                 # Don't retry auth errors or balance errors
                 if is_auth_error or is_balance_error:
                     raise Exception(error_msg)
+                
+                # Handle 400 error - may be sentinel token issue, try refreshing
+                if response.status_code == 400 and add_sentinel_token and not sentinel_refreshed:
+                    print("⚠️ [SoraClient] 400 错误，尝试刷新 sentinel token...")
+                    sentinel_token_manager.clear_cache()
+                    try:
+                        sentinel = await self._generate_sentinel_token(
+                            flow="sora_2_create_task",
+                            token_id=token_id,
+                            force_refresh=True
+                        )
+                        sentinel_refreshed = True
+                        # 更新 headers 中的 sentinel token
+                        headers["openai-sentinel-token"] = sentinel
+                        attempt += 1
+                        continue
+                    except Exception as sentinel_error:
+                        print(f"⚠️ [SoraClient] 刷新 sentinel token 失败: {sentinel_error}")
+                        raise Exception(error_msg)
                 
                 # For 5xx server errors, retry if attempts remain
                 if response.status_code >= 500 and attempt < max_retries:

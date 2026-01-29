@@ -13,27 +13,7 @@
 - custom: 自定义请求 (任意 method + endpoint)
 - rt_to_at: Refresh Token 转 Access Token
 - st_to_at: Session Token 转 Access Token
-
-请求格式:
-{
-    "token": "access_token",
-    "action": "nf_create",  // 请求类型
-    "payload": {...},       // 请求体 (POST 请求)
-    "user_agent": "...",    // 可选，自定义 UA
-    "flow": "...",          // 可选，sentinel flow 类型
-    "add_sentinel": true,   // 可选，是否添加 sentinel token (默认根据 action 自动判断)
-    
-    // custom 类型专用:
-    "method": "GET",        // HTTP 方法
-    "endpoint": "/me",      // API 端点
-    
-    // rt_to_at 类型专用:
-    "refresh_token": "...", // Refresh Token
-    "client_id": "...",     // 可选，Client ID
-    
-    // st_to_at 类型专用:
-    "session_token": "...", // Session Token
-}
+- get_oai_did: 获取 oai-did (访问 chatgpt.com 获取 cookie)
 """
 import os
 import json
@@ -338,6 +318,53 @@ def session_token_to_access_token(session_token):
     return status, body
 
 
+def fetch_oai_did():
+    """
+    获取 oai-did (访问 chatgpt.com)
+    
+    Returns:
+        (status_code, response_body)
+        成功时 response_body 为 {"oai_did": "xxx"}
+        失败时 response_body 为 {"error": "xxx"}
+    """
+    import re
+    
+    url = "https://chatgpt.com/"
+    headers = {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    }
+    
+    try:
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            # 从响应头获取 set-cookie
+            set_cookie = resp.headers.get("set-cookie", "")
+            match = re.search(r'oai-did=([a-f0-9-]{36})', set_cookie)
+            if match:
+                oai_did = match.group(1)
+                return 200, json.dumps({"oai_did": oai_did})
+            
+            # 尝试从多个 set-cookie 头获取
+            cookies = resp.headers.get_all("set-cookie") or []
+            for cookie in cookies:
+                match = re.search(r'oai-did=([a-f0-9-]{36})', cookie)
+                if match:
+                    oai_did = match.group(1)
+                    return 200, json.dumps({"oai_did": oai_did})
+            
+            return 404, json.dumps({"error": "oai-did not found in response cookies"})
+            
+    except urllib.error.HTTPError as e:
+        # 403/429 直接返回错误
+        if e.code in (403, 429):
+            return e.code, json.dumps({"error": f"HTTP {e.code}: IP may be blocked or rate limited"})
+        return e.code, json.dumps({"error": f"HTTP {e.code}: {str(e)}"})
+    except Exception as e:
+        return 500, json.dumps({"error": str(e)})
+
+
 def make_sora_request(token, method, endpoint, payload=None, user_agent=None, 
                       add_sentinel=False, flow=None, sora_base=None, sentinel_base=None):
     """
@@ -421,6 +448,16 @@ def lambda_handler(event, context):
             return {"statusCode": 400, "body": json.dumps({"error": "session_token required"})}
         
         status, resp_body = session_token_to_access_token(session_token)
+        
+        return {
+            "statusCode": status,
+            "headers": {"Content-Type": "application/json"},
+            "body": resp_body,
+        }
+
+    # 处理 get_oai_did (获取 oai-did)
+    if action == "get_oai_did":
+        status, resp_body = fetch_oai_did()
         
         return {
             "statusCode": status,
