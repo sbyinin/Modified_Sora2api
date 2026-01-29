@@ -60,7 +60,8 @@ class SoraClient:
         endpoint: str,
         token: str,
         json_data: Optional[Dict] = None,
-        add_sentinel_token: bool = False
+        add_sentinel_token: bool = False,
+        oai_did: Optional[str] = None
     ) -> Dict[str, Any]:
         """通过 Lambda 代理发起请求
         
@@ -70,6 +71,7 @@ class SoraClient:
             token: Access token
             json_data: JSON 请求体
             add_sentinel_token: 是否添加 sentinel token
+            oai_did: oai-did cookie 值
             
         Returns:
             API 响应
@@ -82,7 +84,8 @@ class SoraClient:
             method=method,
             endpoint=endpoint,
             payload=json_data,
-            add_sentinel=add_sentinel_token
+            add_sentinel=add_sentinel_token,
+            oai_did=oai_did
         )
 
     async def _generate_sentinel_token(

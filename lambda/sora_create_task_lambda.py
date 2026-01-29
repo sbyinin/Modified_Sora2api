@@ -243,8 +243,18 @@ def get_sentinel_token(token, user_agent, flow, sentinel_base):
     return sentinel_token, 200, None
 
 
-def build_sora_headers(token, user_agent, sentinel_token=None, content_type="application/json"):
-    """构建 Sora API 请求头"""
+def build_sora_headers(token, user_agent, sentinel_token=None, content_type="application/json", device_id=None):
+    """构建 Sora API 请求头
+    
+    Args:
+        token: Access token
+        user_agent: User-Agent
+        sentinel_token: openai-sentinel-token
+        content_type: Content-Type
+        device_id: oai-device-id 和 oai-did cookie 的值
+    """
+    effective_device_id = device_id or generate_device_id()
+    
     headers = {
         "Accept": "application/json",
         "Accept-Encoding": "gzip, deflate, br",
@@ -253,9 +263,10 @@ def build_sora_headers(token, user_agent, sentinel_token=None, content_type="app
         "Referer": "https://sora.chatgpt.com/",
         "User-Agent": user_agent,
         "Authorization": f"Bearer {token}",
-        "oai-device-id": generate_device_id(),
+        "oai-device-id": effective_device_id,
         "oai-package-name": "com.openai.sora",
         "oai-client-type": "android",
+        "Cookie": f"oai-did={effective_device_id}",
     }
     
     if content_type:
@@ -366,7 +377,8 @@ def fetch_oai_did():
 
 
 def make_sora_request(token, method, endpoint, payload=None, user_agent=None, 
-                      add_sentinel=False, flow=None, sora_base=None, sentinel_base=None):
+                      add_sentinel=False, flow=None, sora_base=None, sentinel_base=None,
+                      oai_did=None):
     """
     通用 Sora API 请求函数
     
@@ -380,6 +392,7 @@ def make_sora_request(token, method, endpoint, payload=None, user_agent=None,
         flow: sentinel flow 类型
         sora_base: Sora API 基础 URL
         sentinel_base: Sentinel API 基础 URL
+        oai_did: oai-did 值 (如果未提供且需要 sentinel，则自动获取)
     
     Returns:
         (status_code, response_body, response_headers)
@@ -389,13 +402,26 @@ def make_sora_request(token, method, endpoint, payload=None, user_agent=None,
     sentinel_base = sentinel_base or os.environ.get("SENTINEL_BASE_URL", "https://chatgpt.com")
     flow = flow or "sora_2_create_task"
     
+    # 如果需要 sentinel token 但没有提供 oai_did，先获取 oai_did
+    device_id = oai_did
+    if add_sentinel and not device_id:
+        status, resp_body = fetch_oai_did()
+        if status == 200:
+            try:
+                device_id = json.loads(resp_body).get("oai_did")
+            except:
+                pass
+        if not device_id:
+            # 获取失败时生成随机 ID
+            device_id = generate_device_id()
+    
     sentinel_token = None
     if add_sentinel:
         sentinel_token, status, error_body = get_sentinel_token(token, user_agent, flow, sentinel_base)
         if sentinel_token is None:
             return status, error_body, {}
     
-    headers = build_sora_headers(token, user_agent, sentinel_token)
+    headers = build_sora_headers(token, user_agent, sentinel_token, device_id=device_id)
     url = sora_base.rstrip("/") + endpoint
     
     return http_request(url, method, payload, headers, timeout=30)
@@ -485,6 +511,7 @@ def lambda_handler(event, context):
         payload = data.get("payload")
         add_sentinel = data.get("add_sentinel", False)
         flow = data.get("flow", "sora_2_create_task")
+        oai_did = data.get("oai_did")  # 从请求中获取 oai_did
         
         status, resp_body, resp_headers = make_sora_request(
             token=token,
@@ -495,7 +522,8 @@ def lambda_handler(event, context):
             add_sentinel=add_sentinel,
             flow=flow,
             sora_base=sora_base,
-            sentinel_base=sentinel_base
+            sentinel_base=sentinel_base,
+            oai_did=oai_did
         )
         
         return {
@@ -523,6 +551,9 @@ def lambda_handler(event, context):
     # 获取 flow
     flow = data.get("flow") or ACTION_FLOWS.get(action, "sora_2_create_task")
 
+    # 获取 oai_did
+    oai_did = data.get("oai_did")
+    
     # 发起请求
     status, resp_body, resp_headers = make_sora_request(
         token=token,
@@ -533,7 +564,8 @@ def lambda_handler(event, context):
         add_sentinel=add_sentinel,
         flow=flow,
         sora_base=sora_base,
-        sentinel_base=sentinel_base
+        sentinel_base=sentinel_base,
+        oai_did=oai_did
     )
 
     return {

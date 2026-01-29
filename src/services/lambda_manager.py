@@ -299,7 +299,8 @@ class LambdaManager:
         endpoint: Optional[str] = None,
         add_sentinel: Optional[bool] = None,
         flow: Optional[str] = None,
-        user_agent: Optional[str] = None
+        user_agent: Optional[str] = None,
+        oai_did: Optional[str] = None
     ) -> Dict[str, Any]:
         """通用 Lambda 请求方法
         
@@ -314,6 +315,7 @@ class LambdaManager:
             add_sentinel: 是否添加 sentinel token
             flow: sentinel flow 类型
             user_agent: 自定义 UA
+            oai_did: oai-did cookie 值
             
         Returns:
             API 响应 (已解析的 JSON)
@@ -349,6 +351,8 @@ class LambdaManager:
             request_data["flow"] = flow
         if user_agent is not None:
             request_data["user_agent"] = user_agent
+        if oai_did is not None:
+            request_data["oai_did"] = oai_did
         
         # Try each endpoint in round-robin order
         last_error = None
