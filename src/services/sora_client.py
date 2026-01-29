@@ -738,6 +738,7 @@ class SoraClient:
             "n_frames": n_frames,
             "inpaint_items": inpaint_items,
             "remix_target_id": None,
+            "project_id": None,
             "metadata": None,
             "cameo_ids": None,
             "cameo_replacements": None,
