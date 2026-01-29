@@ -422,15 +422,9 @@ async def test_token(token_id: int, token: str = Depends(verify_admin_token)):
 
 @router.delete("/api/tokens/batch-delete-disabled")
 async def batch_delete_disabled_tokens(token: str = Depends(verify_admin_token)):
-    """Delete all disabled tokens"""
+    """Delete all disabled tokens (direct database batch operation)"""
     try:
-        all_tokens = await db.get_all_tokens()
-        deleted_count = 0
-        
-        for t in all_tokens:
-            if not t.is_active:
-                await token_manager.delete_token(t.id)
-                deleted_count += 1
+        deleted_count = await db.batch_delete_disabled_tokens()
         
         return {
             "success": True,
@@ -565,15 +559,9 @@ async def batch_activate_sora2(
 
 @router.post("/api/tokens/batch-enable")
 async def batch_enable_tokens(token: str = Depends(verify_admin_token)):
-    """Enable all disabled tokens"""
+    """Enable all disabled tokens (direct database batch operation)"""
     try:
-        all_tokens = await db.get_all_tokens()
-        enabled_count = 0
-        
-        for t in all_tokens:
-            if not t.is_active:
-                await token_manager.enable_token(t.id)
-                enabled_count += 1
+        enabled_count = await db.batch_enable_all_tokens()
         
         return {
             "success": True,
@@ -586,15 +574,9 @@ async def batch_enable_tokens(token: str = Depends(verify_admin_token)):
 
 @router.post("/api/tokens/batch-disable")
 async def batch_disable_tokens(token: str = Depends(verify_admin_token)):
-    """Disable all enabled tokens"""
+    """Disable all enabled tokens (direct database batch operation)"""
     try:
-        all_tokens = await db.get_all_tokens()
-        disabled_count = 0
-        
-        for t in all_tokens:
-            if t.is_active:
-                await token_manager.disable_token(t.id)
-                disabled_count += 1
+        disabled_count = await db.batch_disable_all_tokens()
         
         return {
             "success": True,

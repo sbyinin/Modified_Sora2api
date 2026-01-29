@@ -1390,6 +1390,65 @@ class Database:
             await db.execute("DELETE FROM tokens WHERE id = ?", (token_id,))
             await db.commit()
 
+    async def batch_enable_all_tokens(self) -> int:
+        """Enable all disabled tokens in a single SQL statement
+        
+        Returns:
+            Number of tokens enabled
+        """
+        async with self._connect() as db:
+            cursor = await db.execute("""
+                UPDATE tokens SET is_active = 1 WHERE is_active = 0
+            """)
+            await db.commit()
+            return cursor.rowcount
+
+    async def batch_disable_all_tokens(self) -> int:
+        """Disable all enabled tokens in a single SQL statement
+        
+        Returns:
+            Number of tokens disabled
+        """
+        async with self._connect() as db:
+            cursor = await db.execute("""
+                UPDATE tokens SET is_active = 0 WHERE is_active = 1
+            """)
+            await db.commit()
+            return cursor.rowcount
+
+    async def batch_delete_disabled_tokens(self) -> int:
+        """Delete all disabled tokens and their related records in batch
+        
+        Returns:
+            Number of tokens deleted
+        """
+        async with self._connect() as db:
+            # Get IDs of disabled tokens first
+            cursor = await db.execute("SELECT id FROM tokens WHERE is_active = 0")
+            rows = await cursor.fetchall()
+            token_ids = [row[0] for row in rows]
+            
+            if not token_ids:
+                return 0
+            
+            # Build placeholder string for IN clause
+            placeholders = ','.join(['?' for _ in token_ids])
+            
+            # Delete related records first
+            await db.execute(f"DELETE FROM request_logs WHERE token_id IN ({placeholders})", token_ids)
+            await db.execute(f"DELETE FROM characters WHERE token_id IN ({placeholders})", token_ids)
+            await db.execute(f"DELETE FROM video_records WHERE token_id IN ({placeholders})", token_ids)
+            await db.execute(f"DELETE FROM token_stats WHERE token_id IN ({placeholders})", token_ids)
+            
+            # Set token_id to NULL for tasks
+            await db.execute(f"UPDATE tasks SET token_id = NULL WHERE token_id IN ({placeholders})", token_ids)
+            
+            # Delete tokens
+            await db.execute(f"DELETE FROM tokens WHERE id IN ({placeholders})", token_ids)
+            await db.commit()
+            
+            return len(token_ids)
+
     async def update_token(self, token_id: int,
                           token: Optional[str] = None,
                           st: Optional[str] = None,
