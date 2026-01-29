@@ -17,12 +17,30 @@ from dataclasses import dataclass
 # Playwright 延迟导入
 _playwright_module = None
 _async_playwright = None
+_playwright_available = None  # None = 未检查, True/False = 检查结果
+
+
+def _check_playwright_available() -> bool:
+    """检查 Playwright 是否可用"""
+    global _playwright_available
+    if _playwright_available is None:
+        try:
+            from playwright.async_api import async_playwright
+            _playwright_available = True
+        except ImportError:
+            _playwright_available = False
+    return _playwright_available
 
 
 def _lazy_import_playwright():
     """延迟导入 Playwright"""
     global _playwright_module, _async_playwright
     if _playwright_module is None:
+        if not _check_playwright_available():
+            raise ImportError(
+                "Playwright 未安装。请启用 Lambda 模式来获取 sentinel token，"
+                "或者安装 playwright: pip install playwright && playwright install chromium"
+            )
         from playwright.async_api import async_playwright
         _playwright_module = True
         _async_playwright = async_playwright

@@ -233,6 +233,16 @@ class SoraClient:
                     add_sentinel_token=add_sentinel_token
                 )
             except Exception as e:
+                # 检查是否可以 fallback 到直接请求
+                # 如果需要 sentinel token 但 playwright 不可用，则不能 fallback
+                if add_sentinel_token:
+                    from .sentinel_token_manager import _check_playwright_available
+                    if not _check_playwright_available():
+                        raise Exception(
+                            f"Lambda 请求失败: {e}。"
+                            f"无法回退到直接请求，因为 Playwright 未安装。"
+                            f"请检查 Lambda 配置或安装 Playwright。"
+                        )
                 print(f"⚠️ [SoraClient] Lambda request failed, falling back to direct: {e}")
                 # Lambda 失败时回退到直接请求
         
