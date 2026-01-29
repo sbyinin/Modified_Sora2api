@@ -152,6 +152,48 @@ class SentinelTokenManager:
         self._cached_token = None
         print("🗑️ [SentinelManager] Token cache cleared")
     
+    async def _fetch_oai_did_local(self, proxy_url: Optional[str] = None) -> str:
+        """本地获取 oai-did（备用方案）"""
+        import re
+        from curl_cffi.requests import AsyncSession
+        
+        print("[SentinelManager] Fetching oai-did locally...")
+        
+        for attempt in range(3):
+            try:
+                async with AsyncSession(impersonate="chrome120") as session:
+                    response = await session.get(
+                        "https://chatgpt.com/",
+                        proxy=proxy_url,
+                        timeout=30,
+                        allow_redirects=True
+                    )
+                    
+                    # 从 cookies 获取
+                    oai_did = response.cookies.get("oai-did")
+                    if oai_did:
+                        print(f"✅ [SentinelManager] Got oai-did locally: {oai_did}")
+                        return oai_did
+                    
+                    # 从 set-cookie 头获取
+                    set_cookie = response.headers.get("set-cookie", "")
+                    match = re.search(r'oai-did=([a-f0-9-]{36})', set_cookie)
+                    if match:
+                        oai_did = match.group(1)
+                        print(f"✅ [SentinelManager] Got oai-did locally: {oai_did}")
+                        return oai_did
+                    
+                    # 检查是否被封
+                    if response.status_code in (403, 429):
+                        raise Exception(f"IP blocked or rate limited (HTTP {response.status_code})")
+                        
+            except Exception as e:
+                print(f"⚠️ [SentinelManager] Local fetch attempt {attempt + 1} failed: {e}")
+                if attempt < 2:
+                    await asyncio.sleep(2)
+        
+        raise Exception("Failed to fetch oai-did locally after 3 attempts")
+
     async def _fetch_oai_did_via_lambda(self) -> str:
         """通过 Lambda 获取 oai-did"""
         lambda_mgr = await self._get_lambda_manager()
@@ -319,12 +361,16 @@ class SentinelTokenManager:
             
             print("🔄 [SentinelManager] Refreshing sentinel token...")
             
-            # 1. 通过 Lambda 获取 oai-did
-            device_id = await self._fetch_oai_did_via_lambda()
-            
-            # 2. 从代理池获取代理
+            # 1. 从代理池获取代理
             proxy_mgr = await self._get_proxy_manager()
             proxy_url = await proxy_mgr.get_proxy_url(token_id)
+            
+            # 2. 获取 oai-did（先尝试 Lambda，失败后本地获取）
+            try:
+                device_id = await self._fetch_oai_did_via_lambda()
+            except Exception as lambda_err:
+                print(f"⚠️ [SentinelManager] Lambda failed, falling back to local: {lambda_err}")
+                device_id = await self._fetch_oai_did_local(proxy_url)
             
             # 3. 通过 Playwright 生成 token
             token = await self._generate_token_via_browser(
