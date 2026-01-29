@@ -341,6 +341,12 @@ class SentinelTokenManager:
         finally:
             await context.close()
     
+    def get_cached_device_id(self) -> Optional[str]:
+        """获取缓存的 device_id (oai-did)"""
+        if self._cached_token:
+            return self._cached_token.device_id
+        return None
+    
     async def get_sentinel_token(
         self,
         force_refresh: bool = False,

@@ -253,14 +253,28 @@ class SoraClient:
             force_refresh=False
         ) if add_sentinel_token else None
         sentinel_refreshed = False  # 标记是否已刷新过 sentinel token
+        
+        # 获取缓存的 device_id 用于 oai-did cookie
+        cached_device_id = sentinel_token_manager.get_cached_device_id() if add_sentinel_token else None
+        
         content_type = None if multipart else "application/json"
         
         headers = build_sora_headers(
             token=token,
             user_agent=user_agent,
             content_type=content_type,
-            sentinel_token=sentinel
+            sentinel_token=sentinel,
+            device_id=cached_device_id
         )
+        
+        # 添加 oai-did cookie（使用与 sentinel token 相同的 device_id）
+        if cached_device_id:
+            existing_cookie = headers.get("Cookie", "")
+            oai_did_cookie = f"oai-did={cached_device_id}"
+            if existing_cookie:
+                headers["Cookie"] = f"{existing_cookie}; {oai_did_cookie}"
+            else:
+                headers["Cookie"] = oai_did_cookie
         if endpoint in ("/nf/create", "/nf/create/storyboard"):
             headers["Accept"] = "application/json"
 
