@@ -998,7 +998,9 @@ class GenerationHandler:
         Args:
             use_pending_v1: If True, use /nf/pending (v1) for polling instead of /nf/pending/v2
             release_video_slot: If False, caller manages video concurrency slot release
-            db_task_id: If provided, write DB/cache updates to this task_id while polling the actual task_id
+            db_task_id: Optional task ID for database/cache writes. If provided, progress updates
+                       will be written to this ID instead of task_id. This is used when retrying
+                       with a new Sora task but wanting to update the original user-facing task.
             
         This method uses adaptive polling intervals based on task progress:
         - 20s when progress < 30%
@@ -1021,10 +1023,6 @@ class GenerationHandler:
         last_progress = 0
         last_db_progress = 0
         start_time = time.time()
-        if db_task_id is None:
-            db_task_id = task_id
-        elif db_task_id != task_id:
-            debug_logger.log_info(f"Polling actual task_id={task_id} for user_task_id={db_task_id}")
         last_heartbeat_time = start_time  # Track last heartbeat for image generation
         heartbeat_interval = 10  # Send heartbeat every 10 seconds for image generation
         last_status_output_time = start_time  # Track last status output time for video generation
@@ -1032,7 +1030,6 @@ class GenerationHandler:
         post_link_emitted = False
         generation_id = None
         draft_url_missing_count = 0
-        missing_task_start_time = None  # Track how long task is missing from pending/drafts
         draft_pending_last_emit = start_time
         draft_pending_emit_interval = 30
         
@@ -1041,8 +1038,13 @@ class GenerationHandler:
         zero_progress_start_time = None  # Will be set on first poll, not from start
         progress_ever_increased = False  # Track if progress ever went above 0%
         first_poll_done = False  # Track if we've done the first poll
+        missing_task_start_time = None  # Track when task goes missing from pending/drafts
+        
+        # If db_task_id is not provided, use task_id for all DB/cache writes
+        if db_task_id is None:
+            db_task_id = task_id
 
-        debug_logger.log_info(f"Starting task polling: task_id={task_id}, is_video={is_video}, timeout={timeout}s, adaptive_polling={'enabled' if is_video else 'disabled'}, dead_token_detection={'enabled' if dead_token_config.enabled else 'disabled'}")
+        debug_logger.log_info(f"Starting task polling: task_id={task_id}, db_task_id={db_task_id}, is_video={is_video}, timeout={timeout}s, adaptive_polling={'enabled' if is_video else 'disabled'}, dead_token_detection={'enabled' if dead_token_config.enabled else 'disabled'}")
 
         # Check and log watermark-free mode status at the beginning
         if is_video:
@@ -1084,7 +1086,7 @@ class GenerationHandler:
                     )
                 except Exception as cache_error:
                     debug_logger.log_info(
-                        f"Failed to cache timeout for {task_id}: {cache_error}"
+                        f"Failed to cache timeout for {db_task_id}: {cache_error}"
                     )
                 await self.db.update_request_log_by_task_id(
                     db_task_id,
@@ -1120,7 +1122,7 @@ class GenerationHandler:
                         if task.get("id") == task_id:
                             task_found = True
                             draft_url_missing_count = 0
-                            missing_task_start_time = None  # Task found, reset missing timer
+                            missing_task_start_time = None  # Reset missing timer when found
                             # Update progress
                             progress_pct = task.get("progress_pct")
                             # Handle null progress at the beginning
@@ -1158,7 +1160,7 @@ class GenerationHandler:
                                 )
                             except Exception as cache_error:
                                 debug_logger.log_info(
-                                    f"Failed to cache task progress for {task_id}: {cache_error}"
+                                    f"Failed to cache task progress for {db_task_id}: {cache_error}"
                                 )
 
                             if abs(progress_pct - last_db_progress) >= db_update_threshold:
@@ -1167,7 +1169,7 @@ class GenerationHandler:
                                     last_db_progress = progress_pct
                                 except Exception as update_error:
                                     debug_logger.log_info(
-                                        f"Failed to update task progress for {task_id}: {update_error}"
+                                        f"Failed to update task progress for {db_task_id}: {update_error}"
                                     )
                             
                             # Record progress for adaptive polling (stall detection)
@@ -1234,10 +1236,11 @@ class GenerationHandler:
 
                         # Find matching task in drafts
                         draft_pending = False
+                        task_found_in_drafts = False
                         for item in items:
                             if item.get("task_id") == task_id:
-                                # Task found in drafts, reset missing-task timer
-                                missing_task_start_time = None
+                                task_found_in_drafts = True
+                                missing_task_start_time = None  # Reset missing timer when found in drafts
                                 # Check for content violation
                                 current_generation_id = item.get("id")
                                 if current_generation_id and current_generation_id != generation_id:
@@ -1247,7 +1250,7 @@ class GenerationHandler:
                                         await self.db.update_task_generation_id(db_task_id, generation_id)
                                     except Exception as update_error:
                                         debug_logger.log_info(
-                                            f"Failed to update generation_id for {task_id}: {update_error}"
+                                            f"Failed to update generation_id for {db_task_id}: {update_error}"
                                         )
                                     try:
                                         cache_extra = {"token_id": token_id} if token_id is not None else {}
@@ -1260,7 +1263,7 @@ class GenerationHandler:
                                         )
                                     except Exception as cache_error:
                                         debug_logger.log_info(
-                                            f"Failed to cache generation_id for {task_id}: {cache_error}"
+                                            f"Failed to cache generation_id for {db_task_id}: {cache_error}"
                                         )
 
                                 kind = item.get("kind")
@@ -1298,7 +1301,7 @@ class GenerationHandler:
                                         )
                                     except Exception as cache_error:
                                         debug_logger.log_info(
-                                            f"Failed to cache permalink for {task_id}: {cache_error}"
+                                            f"Failed to cache permalink for {db_task_id}: {cache_error}"
                                         )
 
                                 debug_logger.log_info(f"Found task {task_id} in drafts with kind: {kind}, reason_str: {reason_str}, has_url: {bool(url)}")
@@ -1332,7 +1335,7 @@ class GenerationHandler:
                                         )
                                     except Exception as cache_error:
                                         debug_logger.log_info(
-                                            f"Failed to cache failed task for {task_id}: {cache_error}"
+                                            f"Failed to cache failed task for {db_task_id}: {cache_error}"
                                         )
                                     await self.db.update_request_log_by_task_id(
                                         db_task_id,
@@ -1365,26 +1368,6 @@ class GenerationHandler:
 
                                     # Stop polling immediately
                                     return
-                        
-                        # If still not found in drafts, track missing time
-                        if not draft_pending:
-                            if missing_task_start_time is None:
-                                missing_task_start_time = time.time()
-                            missing_duration = time.time() - missing_task_start_time
-                            if dead_token_config.enabled and token_id and missing_duration >= dead_token_config.zero_progress_timeout:
-                                debug_logger.log_info(
-                                    f"Dead token detected: token_id={token_id}, task_id={task_id}, "
-                                    f"not found in pending/drafts for {missing_duration:.1f}s "
-                                    f"(threshold: {dead_token_config.zero_progress_timeout}s)"
-                                )
-                                if self.concurrency_manager and release_video_slot:
-                                    await self.concurrency_manager.release_video(token_id)
-                                    debug_logger.log_info(f"Released concurrency slot for dead token {token_id}")
-                                raise DeadTokenError(
-                                    token_id=token_id,
-                                    task_id=task_id,
-                                    message=f"Token {token_id} appears dead: task missing for {missing_duration:.1f}s"
-                                )
                                 
                                 if not url:
                                     draft_url_missing_count += 1
@@ -1626,7 +1609,7 @@ class GenerationHandler:
 
                                 # Task completed
                                 await self.db.update_task(
-                                    task_id, "completed", 100.0,
+                                    db_task_id, "completed", 100.0,
                                     result_urls=json.dumps([local_url]),
                                     generation_id=generation_id,
                                     permalink=permalink if isinstance(permalink, str) and permalink else None
@@ -1640,18 +1623,18 @@ class GenerationHandler:
                                     if isinstance(local_url, str) and local_url:
                                         cache_extra["result_url"] = local_url
                                     await redis_mgr.cache_task_progress(
-                                        task_id,
+                                        db_task_id,
                                         100.0,
                                         "completed",
                                         extra_data=cache_extra
                                     )
                                 except Exception as cache_error:
                                     debug_logger.log_info(
-                                        f"Failed to cache completed task for {task_id}: {cache_error}"
+                                        f"Failed to cache completed task for {db_task_id}: {cache_error}"
                                     )
                                 await self.db.update_request_log_by_task_id(
-                                    task_id,
-                                    response_body=json.dumps({"task_id": task_id, "status": "success"}),
+                                    db_task_id,
+                                    response_body=json.dumps({"task_id": db_task_id, "status": "success"}),
                                     status_code=200,
                                     duration=time.time() - start_time
                                 )
@@ -1674,6 +1657,34 @@ class GenerationHandler:
                                 )
                                     yield "data: [DONE]\n\n"
                                 return
+                        
+                        # Check if task is missing from both pending and drafts (dead token detection)
+                        if not task_found_in_drafts and not draft_pending:
+                            # Task not found in pending (checked above) and not in drafts
+                            if dead_token_config.enabled and token_id:
+                                if missing_task_start_time is None:
+                                    missing_task_start_time = time.time()
+                                    debug_logger.log_info(
+                                        f"Task {task_id} not found in pending or drafts, starting missing task timer"
+                                    )
+                                else:
+                                    missing_duration = time.time() - missing_task_start_time
+                                    if missing_duration >= dead_token_config.zero_progress_timeout:
+                                        debug_logger.log_info(
+                                            f"Dead token detected: token_id={token_id}, task_id={task_id}, "
+                                            f"task missing from pending/drafts for {missing_duration:.1f}s (threshold: {dead_token_config.zero_progress_timeout}s)"
+                                        )
+                                        # Release concurrency slot before raising
+                                        if self.concurrency_manager and release_video_slot:
+                                            await self.concurrency_manager.release_video(token_id)
+                                            debug_logger.log_info(f"Released concurrency slot for dead token {token_id}")
+                                        # Raise DeadTokenError for retry logic
+                                        raise DeadTokenError(
+                                            token_id=token_id,
+                                            task_id=task_id,
+                                            message=f"Token {token_id} appears dead: task not found in pending/drafts for {missing_duration:.1f}s"
+                                        )
+                        
                         if draft_pending:
                             continue
                 else:
@@ -1756,11 +1767,11 @@ class GenerationHandler:
                                             )
 
                                     await self.db.update_task(
-                                        db_task_id, "completed", 100.0,
+                                        task_id, "completed", 100.0,
                                         result_urls=json.dumps(local_urls)
                                     )
                                     await self.db.update_request_log_by_task_id(
-                                        db_task_id,
+                                        task_id,
                                         response_body=json.dumps({"task_id": task_id, "status": "success"}),
                                         status_code=200,
                                         duration=time.time() - start_time
@@ -1780,9 +1791,9 @@ class GenerationHandler:
 
                             elif status == "failed":
                                 error_msg = task_resp.get("error_message", "Generation failed")
-                                await self.db.update_task(db_task_id, "failed", progress, error_message=error_msg)
+                                await self.db.update_task(task_id, "failed", progress, error_message=error_msg)
                                 await self.db.update_request_log_by_task_id(
-                                    db_task_id,
+                                    task_id,
                                     response_body=json.dumps({"error": error_msg}),
                                     status_code=500,
                                     duration=time.time() - start_time
@@ -1793,7 +1804,7 @@ class GenerationHandler:
                                 # Update progress only if changed significantly
                                 if progress > last_progress + 20:  # Update every 20%
                                     last_progress = progress
-                                    await self.db.update_task(db_task_id, "processing", progress)
+                                    await self.db.update_task(task_id, "processing", progress)
 
                                     if stream:
                                         yield self._format_stream_chunk(
@@ -1833,7 +1844,7 @@ class GenerationHandler:
                 # Note: With adaptive polling, we rely on actual progress updates rather than attempt counts
             
             except DeadTokenError:
-                # Re-raise DeadTokenError so caller can handle retry logic
+                # Re-raise DeadTokenError to allow retry logic in caller
                 raise
             except Exception as e:
                 # Log the error but continue polling (timeout check at loop start will handle termination)
@@ -1867,7 +1878,7 @@ class GenerationHandler:
             )
         except Exception as cache_error:
             debug_logger.log_info(
-                f"Failed to cache timeout for {task_id}: {cache_error}"
+                f"Failed to cache timeout for {db_task_id}: {cache_error}"
             )
         await self.db.update_request_log_by_task_id(
             db_task_id,
