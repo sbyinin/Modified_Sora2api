@@ -1185,11 +1185,8 @@ class GenerationHandler:
                                             f"Dead token detected: token_id={token_id}, task_id={task_id}, "
                                             f"stuck at 0% for {zero_progress_duration:.1f}s (threshold: {dead_token_config.zero_progress_timeout}s)"
                                         )
-                                        # Mark task as failed due to dead token
-                                        await self.db.update_task(
-                                            task_id, "failed", 0, 
-                                            error_message=f"Dead token detected: progress stuck at 0% for {zero_progress_duration:.1f}s"
-                                        )
+                                        # DO NOT mark task as failed here - let the retry logic in handle_generation handle it
+                                        # Only mark as failed after all retries are exhausted
                                         # Release concurrency slot before raising
                                         if self.concurrency_manager and release_video_slot:
                                             await self.concurrency_manager.release_video(token_id)
