@@ -1767,12 +1767,12 @@ class GenerationHandler:
                                             )
 
                                     await self.db.update_task(
-                                        task_id, "completed", 100.0,
+                                        db_task_id, "completed", 100.0,
                                         result_urls=json.dumps(local_urls)
                                     )
                                     await self.db.update_request_log_by_task_id(
-                                        task_id,
-                                        response_body=json.dumps({"task_id": task_id, "status": "success"}),
+                                        db_task_id,
+                                        response_body=json.dumps({"task_id": db_task_id, "status": "success"}),
                                         status_code=200,
                                         duration=time.time() - start_time
                                     )
@@ -1791,9 +1791,9 @@ class GenerationHandler:
 
                             elif status == "failed":
                                 error_msg = task_resp.get("error_message", "Generation failed")
-                                await self.db.update_task(task_id, "failed", progress, error_message=error_msg)
+                                await self.db.update_task(db_task_id, "failed", progress, error_message=error_msg)
                                 await self.db.update_request_log_by_task_id(
-                                    task_id,
+                                    db_task_id,
                                     response_body=json.dumps({"error": error_msg}),
                                     status_code=500,
                                     duration=time.time() - start_time
@@ -1804,7 +1804,7 @@ class GenerationHandler:
                                 # Update progress only if changed significantly
                                 if progress > last_progress + 20:  # Update every 20%
                                     last_progress = progress
-                                    await self.db.update_task(task_id, "processing", progress)
+                                    await self.db.update_task(db_task_id, "processing", progress)
 
                                     if stream:
                                         yield self._format_stream_chunk(
