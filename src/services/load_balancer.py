@@ -72,13 +72,14 @@ class LoadBalancer:
         except Exception as e:
             debug_logger.log_info(f"[LOAD_BALANCER] 后台刷新检查失败: {e}")
 
-    async def select_token(self, for_image_generation: bool = False, for_video_generation: bool = False) -> Optional[Token]:
+    async def select_token(self, for_image_generation: bool = False, for_video_generation: bool = False, excluded_token_ids: set = None) -> Optional[Token]:
         """
         Select a token using round-robin load balancing
 
         Args:
             for_image_generation: If True, only select tokens that are not locked for image generation and have image_enabled=True
             for_video_generation: If True, filter out tokens with Sora2 quota exhausted (sora2_cooldown_until not expired), tokens that don't support Sora2, and tokens with video_enabled=False
+            excluded_token_ids: Set of token IDs to exclude from selection (e.g., dead tokens)
 
         Returns:
             Selected token or None if no available tokens
@@ -88,7 +89,12 @@ class LoadBalancer:
             if not self._refresh_task or self._refresh_task.done():
                 self._refresh_task = asyncio.create_task(self._background_refresh_check())
 
+        excluded_token_ids = excluded_token_ids or set()
         active_tokens = await self.token_manager.get_active_tokens()
+        
+        # Filter out excluded tokens
+        if excluded_token_ids:
+            active_tokens = [t for t in active_tokens if t.id not in excluded_token_ids]
 
         if not active_tokens:
             return None

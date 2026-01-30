@@ -11,8 +11,8 @@ MOBILE_FINGERPRINTS = [
     "safari18_0_ios",
 ]
 
-# Sora App UA (Android)
-SORA_APP_USER_AGENT = "Sora/1.2026.007 (Android 15; 24122RKC7C; build 2600700)"
+# Sora Web UA (PC Chrome)
+SORA_APP_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
 # Sora App 标识头
 SORA_APP_PACKAGE_NAME = "com.openai.sora"

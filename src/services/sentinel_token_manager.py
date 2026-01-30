@@ -7,10 +7,13 @@ Sentinel Token Manager - 高并发缓存 + Playwright 方式获取
 3. Token 缓存（带 TTL）
 4. 通过 Lambda 获取 oai-did
 5. 通过本地 Playwright + 代理池获取 sentinel token
+6. 支持随机 token 模式（用于测试/绕过检测）
 """
 import asyncio
 import json
 import time
+import secrets
+import base64
 from typing import Optional, Dict, Tuple
 from dataclasses import dataclass
 
@@ -62,6 +65,9 @@ class SentinelTokenManager:
     # Token 缓存 TTL (秒) - 默认 5 分钟
     TOKEN_TTL = 300
     
+    # 随机 token 模式开关
+    USE_RANDOM_TOKEN = True
+    
     def __init__(self):
         # 浏览器实例（复用）
         self._browser = None
@@ -80,6 +86,28 @@ class SentinelTokenManager:
         
         # Proxy manager (lazy loaded)
         self._proxy_manager = None
+    
+    @staticmethod
+    def _generate_random_token() -> str:
+        """
+        生成随机 sentinel token
+        格式模拟真实 token 结构
+        """
+        # 生成随机字节并编码为 base64
+        random_bytes = secrets.token_bytes(64)
+        token = base64.urlsafe_b64encode(random_bytes).decode('utf-8').rstrip('=')
+        print(f"🎲 [SentinelManager] Generated random token: {token[:20]}...")
+        return token
+    
+    @staticmethod
+    def _generate_random_device_id() -> str:
+        """
+        生成随机 device_id (oai-did 格式: UUID)
+        """
+        import uuid
+        device_id = str(uuid.uuid4())
+        print(f"🎲 [SentinelManager] Generated random device_id: {device_id}")
+        return device_id
     
     async def _get_lambda_manager(self):
         """获取 Lambda manager"""
@@ -357,10 +385,11 @@ class SentinelTokenManager:
         获取 sentinel token（高并发安全）
         
         流程:
-        1. 快速路径: 有缓存且不强制刷新时直接返回
-        2. 加锁排队: 需要刷新时获取锁
-        3. Double-check: 获取锁后再次检查缓存
-        4. 刷新: 通过 Lambda 获取 oai-did，再通过 Playwright 获取 token
+        1. 随机模式: 如果 USE_RANDOM_TOKEN=True，直接生成随机 token
+        2. 快速路径: 有缓存且不强制刷新时直接返回
+        3. 加锁排队: 需要刷新时获取锁
+        4. Double-check: 获取锁后再次检查缓存
+        5. 刷新: 通过 Lambda 获取 oai-did，再通过 Playwright 获取 token
         
         Args:
             force_refresh: 是否强制刷新（忽略缓存）
@@ -373,6 +402,21 @@ class SentinelTokenManager:
         Raises:
             Exception: 获取失败时抛出异常
         """
+        # 随机模式：每次都生成新的随机 token
+        if self.USE_RANDOM_TOKEN:
+            print("🎲 [SentinelManager] Random token mode enabled")
+            device_id = self._generate_random_device_id()
+            token = self._generate_random_token()
+            
+            # 更新缓存（保持接口一致性）
+            self._cached_token = CachedToken(
+                token=token,
+                device_id=device_id,
+                created_at=time.time(),
+                proxy_url=None
+            )
+            return token
+        
         # 快速路径（无锁）
         if not force_refresh and self._is_token_valid():
             print("⚡ [SentinelManager] Using cached token (fast path)")

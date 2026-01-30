@@ -221,6 +221,14 @@ class UpdateLambdaConfigRequest(BaseModel):
     lambda_api_urls: Optional[List[str]] = None  # List of URLs for round-robin polling
     lambda_api_key: Optional[str] = None
 
+class UpdateSentinelConfigRequest(BaseModel):
+    use_random_token: bool
+
+class UpdateDeadTokenDetectionConfigRequest(BaseModel):
+    enabled: Optional[bool] = None
+    zero_progress_timeout: Optional[float] = None  # Seconds to wait at 0% before considering token dead
+    max_retries: Optional[int] = None  # Maximum number of token retries
+
 # Auth endpoints
 @router.post("/api/login", response_model=LoginResponse)
 async def login(request: LoginRequest):
@@ -1445,6 +1453,88 @@ async def update_lambda_config(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update Lambda config: {str(e)}")
+
+# Sentinel token config endpoints
+@router.get("/api/sentinel/config")
+async def get_sentinel_config(token: str = Depends(verify_admin_token)):
+    """Get sentinel token configuration"""
+    from ..services.sentinel_token_manager import SentinelTokenManager
+    return {
+        "success": True,
+        "config": {
+            "use_random_token": SentinelTokenManager.USE_RANDOM_TOKEN
+        }
+    }
+
+@router.post("/api/sentinel/config")
+async def update_sentinel_config(
+    request: UpdateSentinelConfigRequest,
+    token: str = Depends(verify_admin_token)
+):
+    """Update sentinel token configuration"""
+    try:
+        from ..services.sentinel_token_manager import SentinelTokenManager
+        SentinelTokenManager.USE_RANDOM_TOKEN = request.use_random_token
+        
+        status = "enabled" if request.use_random_token else "disabled"
+        return {
+            "success": True,
+            "message": f"Random sentinel token mode {status}",
+            "use_random_token": request.use_random_token
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update sentinel config: {str(e)}")
+
+# Dead token detection config endpoints
+@router.get("/api/dead-token-detection/config")
+async def get_dead_token_detection_config(token: str = Depends(verify_admin_token)):
+    """Get dead token detection configuration"""
+    from ..services.generation_handler import get_dead_token_config
+    config = get_dead_token_config()
+    return {
+        "success": True,
+        "config": {
+            "enabled": config.enabled,
+            "zero_progress_timeout": config.zero_progress_timeout,
+            "max_retries": config.max_retries
+        }
+    }
+
+@router.post("/api/dead-token-detection/config")
+async def update_dead_token_detection_config(
+    request: UpdateDeadTokenDetectionConfigRequest,
+    token: str = Depends(verify_admin_token)
+):
+    """Update dead token detection configuration"""
+    try:
+        from ..services.generation_handler import set_dead_token_config, get_dead_token_config
+        
+        # Validate values
+        if request.zero_progress_timeout is not None and request.zero_progress_timeout < 30:
+            raise HTTPException(status_code=400, detail="zero_progress_timeout must be at least 30 seconds")
+        if request.max_retries is not None and (request.max_retries < 1 or request.max_retries > 10):
+            raise HTTPException(status_code=400, detail="max_retries must be between 1 and 10")
+        
+        set_dead_token_config(
+            enabled=request.enabled,
+            zero_progress_timeout=request.zero_progress_timeout,
+            max_retries=request.max_retries
+        )
+        
+        config = get_dead_token_config()
+        return {
+            "success": True,
+            "message": "Dead token detection configuration updated",
+            "config": {
+                "enabled": config.enabled,
+                "zero_progress_timeout": config.zero_progress_timeout,
+                "max_retries": config.max_retries
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update dead token detection config: {str(e)}")
 
 # AT auto refresh config endpoints
 @router.get("/api/token-refresh/config")

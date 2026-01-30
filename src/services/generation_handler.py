@@ -22,6 +22,49 @@ from ..core.http_utils import get_random_fingerprint
 from ..core.redis_manager import get_redis_manager
 
 
+class DeadTokenError(Exception):
+    """Exception raised when a token is detected as dead (progress stuck at 0%)"""
+    def __init__(self, token_id: int, task_id: str, message: str = "Dead token detected"):
+        self.token_id = token_id
+        self.task_id = task_id
+        super().__init__(message)
+
+
+@dataclass
+class DeadTokenDetectionConfig:
+    """Configuration for dead token detection
+    
+    Attributes:
+        enabled: Whether dead token detection is enabled
+        zero_progress_timeout: Time in seconds to wait at 0% progress before considering token dead
+                               Counting starts from the FIRST poll, not from task submission
+        max_retries: Maximum number of token retries before giving up
+    """
+    enabled: bool = True
+    zero_progress_timeout: float = 60.0  # 60 seconds at 0% progress after first poll = dead token
+    max_retries: int = 3  # Maximum retries with different tokens
+
+
+# Global dead token detection config (can be updated via admin API)
+_dead_token_config = DeadTokenDetectionConfig()
+
+
+def get_dead_token_config() -> DeadTokenDetectionConfig:
+    """Get current dead token detection configuration"""
+    return _dead_token_config
+
+
+def set_dead_token_config(enabled: bool = None, zero_progress_timeout: float = None, max_retries: int = None):
+    """Update dead token detection configuration"""
+    global _dead_token_config
+    if enabled is not None:
+        _dead_token_config.enabled = enabled
+    if zero_progress_timeout is not None:
+        _dead_token_config.zero_progress_timeout = zero_progress_timeout
+    if max_retries is not None:
+        _dead_token_config.max_retries = max_retries
+
+
 @dataclass
 class PollingConfig:
     """Configuration for adaptive polling intervals
@@ -471,16 +514,28 @@ class GenerationHandler:
         token_obj = await self.load_balancer.select_token(for_image_generation=is_image, for_video_generation=is_video)
         return token_obj is not None
 
-    async def _acquire_token_for_generation(self, is_image: bool, is_video: bool, max_attempts: int = 5):
-        """Select a token and acquire required locks/concurrency with retry."""
+    async def _acquire_token_for_generation(self, is_image: bool, is_video: bool, max_attempts: int = 5, excluded_token_ids: set = None):
+        """Select a token and acquire required locks/concurrency with retry.
+        
+        Args:
+            is_image: Whether this is for image generation
+            is_video: Whether this is for video generation
+            max_attempts: Maximum attempts to acquire a token
+            excluded_token_ids: Set of token IDs to exclude (e.g., dead tokens)
+        """
         if is_image:
             no_token_msg = "No available tokens for image generation. All tokens are either disabled, cooling down, locked, or expired."
         else:
             no_token_msg = "No available tokens for video generation. All tokens are either disabled, cooling down, Sora2 quota exhausted, don't support Sora2, or expired."
 
+        excluded_token_ids = excluded_token_ids or set()
         last_error = None
         for attempt in range(max_attempts):
-            token_obj = await self.load_balancer.select_token(for_image_generation=is_image, for_video_generation=is_video)
+            token_obj = await self.load_balancer.select_token(
+                for_image_generation=is_image, 
+                for_video_generation=is_video,
+                excluded_token_ids=excluded_token_ids
+            )
             if not token_obj:
                 last_error = no_token_msg
                 await asyncio.sleep(0.05 * (attempt + 1) + random.uniform(0.0, 0.05))
@@ -520,7 +575,7 @@ class GenerationHandler:
                                character_options: Optional[CharacterOptions] = None,
                                style_id: Optional[str] = None,
                                use_pending_v1: bool = False) -> AsyncGenerator[str, None]:
-        """Handle generation request
+        """Handle generation request with dead token retry support
 
         Args:
             model: Model name
@@ -584,52 +639,139 @@ class GenerationHandler:
                         yield chunk
                     return
 
-        # Streaming mode: proceed with actual generation
-        token_obj = await self._acquire_token_for_generation(is_image=is_image, is_video=is_video)
+        # Dead token retry logic for video generation
+        dead_token_config = get_dead_token_config()
+        max_retries = dead_token_config.max_retries if (dead_token_config.enabled and is_video) else 1
+        disabled_token_ids = set()  # Track disabled tokens to avoid reselecting them
+        last_error = None
+        
+        for retry_attempt in range(max_retries):
+            try:
+                # Streaming mode: proceed with actual generation
+                token_obj = await self._acquire_token_for_generation(
+                    is_image=is_image, 
+                    is_video=is_video,
+                    excluded_token_ids=disabled_token_ids
+                )
+                
+                if retry_attempt > 0:
+                    # Notify user about retry
+                    yield self._format_stream_chunk(
+                        reasoning_content=f"Retrying with different token (attempt {retry_attempt + 1}/{max_retries})...",
+                        stage="retry",
+                        status="started"
+                    )
+                
+                # Call the inner generation logic
+                async for chunk in self._handle_generation_inner(
+                    token_obj=token_obj,
+                    model=model,
+                    model_config=model_config,
+                    prompt=prompt,
+                    image=image,
+                    is_video=is_video,
+                    is_image=is_image,
+                    style_id=style_id,
+                    use_pending_v1=use_pending_v1,
+                    start_time=start_time,
+                    is_first_chunk=(retry_attempt == 0)
+                ):
+                    yield chunk
+                
+                # If we get here, generation succeeded
+                return
+                
+            except DeadTokenError as e:
+                last_error = e
+                debug_logger.log_info(
+                    f"Dead token detected on attempt {retry_attempt + 1}/{max_retries}: "
+                    f"token_id={e.token_id}, task_id={e.task_id}"
+                )
+                
+                # Disable the dead token
+                await self.token_manager.disable_token(e.token_id)
+                disabled_token_ids.add(e.token_id)
+                debug_logger.log_info(f"Auto-disabled dead token {e.token_id}")
+                
+                # Notify user about dead token
+                yield self._format_stream_chunk(
+                    reasoning_content=f"Dead token detected (progress stuck at 0%). Token has been disabled. {'Retrying with a different token...' if retry_attempt < max_retries - 1 else 'No more retries available.'}",
+                    stage="dead_token",
+                    status="detected",
+                    details={"token_id": e.token_id, "retry_attempt": retry_attempt + 1, "max_retries": max_retries}
+                )
+                
+                if retry_attempt >= max_retries - 1:
+                    # No more retries, raise the error
+                    raise Exception(
+                        f"Generation failed after {max_retries} attempts due to dead tokens. "
+                        f"Last error: {str(e)}"
+                    )
+                
+                # Small delay before retry
+                await asyncio.sleep(1.0)
+                continue
+        
+        # Should not reach here, but just in case
+        if last_error:
+            raise last_error
+
+    async def _handle_generation_inner(
+        self,
+        token_obj,
+        model: str,
+        model_config: dict,
+        prompt: str,
+        image: Optional[str],
+        is_video: bool,
+        is_image: bool,
+        style_id: Optional[str],
+        use_pending_v1: bool,
+        start_time: float,
+        is_first_chunk: bool = True
+    ) -> AsyncGenerator[str, None]:
+        """Inner generation logic, separated for retry support"""
 
         task_id = None
         log_id = None  # Log ID for updating later
-        is_first_chunk = True  # Track if this is the first chunk
+        stream = True  # Always stream in this inner method
 
         try:
             # Upload image if provided
             media_id = None
             if image:
-                if stream:
-                    yield self._format_stream_chunk(
-                        reasoning_content="Uploading image to server...",
-                        stage="upload",
-                        status="started",
-                        is_first=is_first_chunk
-                    )
-                    is_first_chunk = False
+                yield self._format_stream_chunk(
+                    reasoning_content="Uploading image to server...",
+                    stage="upload",
+                    status="started",
+                    is_first=is_first_chunk
+                )
+                is_first_chunk = False
 
                 image_data = self._decode_base64_image(image)
                 media_id = await self.sora_client.upload_image(image_data, token_obj.token)
 
-                if stream:
-                    yield self._format_stream_chunk(
-                        reasoning_content="Image uploaded successfully. Proceeding to generation...",
-                        stage="upload",
-                        status="completed"
-                    )
+                yield self._format_stream_chunk(
+                    reasoning_content="Image uploaded successfully. Proceeding to generation...",
+                    stage="upload",
+                    status="completed"
+                )
 
             # Generate
-            if stream:
-                if is_first_chunk:
-                    yield self._format_stream_chunk(
-                        reasoning_content="Initializing generation request...",
-                        stage="generation",
-                        status="started",
-                        is_first=True
-                    )
-                    is_first_chunk = False
-                else:
-                    yield self._format_stream_chunk(
-                        reasoning_content="Initializing generation request...",
-                        stage="generation",
-                        status="started"
-                    )
+            if is_first_chunk:
+                yield self._format_stream_chunk(
+                    reasoning_content="Initializing generation request...",
+                    stage="generation",
+                    status="started",
+                    is_first=True
+                )
+                is_first_chunk = False
+            else:
+                yield self._format_stream_chunk(
+                    reasoning_content="Initializing generation request...",
+                    stage="generation",
+                    status="started"
+                )
             
             if is_video:
                 # Get n_frames from model configuration
@@ -886,8 +1028,14 @@ class GenerationHandler:
         draft_url_missing_count = 0
         draft_pending_last_emit = start_time
         draft_pending_emit_interval = 30
+        
+        # Dead token detection variables
+        dead_token_config = get_dead_token_config()
+        zero_progress_start_time = None  # Will be set on first poll, not from start
+        progress_ever_increased = False  # Track if progress ever went above 0%
+        first_poll_done = False  # Track if we've done the first poll
 
-        debug_logger.log_info(f"Starting task polling: task_id={task_id}, is_video={is_video}, timeout={timeout}s, adaptive_polling={'enabled' if is_video else 'disabled'}")
+        debug_logger.log_info(f"Starting task polling: task_id={task_id}, is_video={is_video}, timeout={timeout}s, adaptive_polling={'enabled' if is_video else 'disabled'}, dead_token_detection={'enabled' if dead_token_config.enabled else 'disabled'}")
 
         # Check and log watermark-free mode status at the beginning
         if is_video:
@@ -1018,6 +1166,40 @@ class GenerationHandler:
                             # Requirements: 1.5 - detect stall when no progress for 2 consecutive polls
                             if adaptive_poller:
                                 adaptive_poller.record_progress(progress_pct)
+                            
+                            # Dead token detection: check if progress is stuck at 0%
+                            if dead_token_config.enabled and token_id:
+                                # Start counting from first poll, not from task submission
+                                if not first_poll_done:
+                                    first_poll_done = True
+                                    zero_progress_start_time = time.time()
+                                
+                                if progress_pct > 0:
+                                    # Progress increased, this token is not dead
+                                    progress_ever_increased = True
+                                elif not progress_ever_increased and zero_progress_start_time is not None:
+                                    # Progress is still at 0%, check timeout
+                                    zero_progress_duration = time.time() - zero_progress_start_time
+                                    if zero_progress_duration >= dead_token_config.zero_progress_timeout:
+                                        debug_logger.log_info(
+                                            f"Dead token detected: token_id={token_id}, task_id={task_id}, "
+                                            f"stuck at 0% for {zero_progress_duration:.1f}s (threshold: {dead_token_config.zero_progress_timeout}s)"
+                                        )
+                                        # Mark task as failed due to dead token
+                                        await self.db.update_task(
+                                            task_id, "failed", 0, 
+                                            error_message=f"Dead token detected: progress stuck at 0% for {zero_progress_duration:.1f}s"
+                                        )
+                                        # Release concurrency slot before raising
+                                        if self.concurrency_manager and release_video_slot:
+                                            await self.concurrency_manager.release_video(token_id)
+                                            debug_logger.log_info(f"Released concurrency slot for dead token {token_id}")
+                                        # Raise DeadTokenError for retry logic
+                                        raise DeadTokenError(
+                                            token_id=token_id,
+                                            task_id=task_id,
+                                            message=f"Token {token_id} appears dead: progress stuck at 0% for {zero_progress_duration:.1f}s"
+                                        )
 
                             # Output progress when it changes (at least 1% difference) or every 30 seconds
                             current_time = time.time()

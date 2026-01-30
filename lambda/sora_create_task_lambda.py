@@ -23,7 +23,7 @@ import urllib.request
 import urllib.error
 from datetime import datetime, timedelta, timezone
 
-SORA_APP_USER_AGENT = "Sora/1.2026.007 (Android 15; 24122RKC7C; build 2600700)"
+SORA_APP_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
 POW_MAX_ITERATION = 500000
 POW_CORES = [8, 16, 24, 32]
