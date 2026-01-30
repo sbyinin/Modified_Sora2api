@@ -697,6 +697,7 @@ async def _process_video_generation_v2(video_id: str):
         result_url = None
         last_chunk = None
         chunk_count = 0
+        error_detected = None  # Track errors from stream
         
         async for chunk in generation_handler.handle_generation(
             model=task_info["internal_model"],
@@ -709,6 +710,33 @@ async def _process_video_generation_v2(video_id: str):
             chunk_count += 1
             if isinstance(chunk, str):
                 last_chunk = chunk
+                
+                # Check for error in chunk (content violation, dead token, etc.)
+                if '"stage":"error"' in chunk or '"status":"error"' in chunk or 'content_policy_violation' in chunk:
+                    try:
+                        if chunk.startswith("data: ") and chunk != "data: [DONE]\n\n":
+                            data = json.loads(chunk[6:])
+                            choices = data.get("choices", [])
+                            if choices:
+                                delta = choices[0].get("delta", {})
+                                reasoning = delta.get("reasoning_content", "")
+                                content = delta.get("content", "")
+                                # Extract error message
+                                if "Content policy violation" in reasoning:
+                                    error_detected = reasoning
+                                elif content:
+                                    try:
+                                        content_data = json.loads(content)
+                                        if content_data.get("type") == "error":
+                                            error_detected = content_data.get("error", "Unknown error")
+                                    except:
+                                        if "error" in content.lower():
+                                            error_detected = content
+                    except:
+                        pass
+                    if error_detected:
+                        print(f"[VideoTask] {video_id}: Error detected in stream: {error_detected}")
+                
                 metadata = _extract_metadata_from_chunk(chunk)
                 if metadata.get("generation_id"):
                     task_info["generation_id"] = metadata.get("generation_id")
@@ -771,13 +799,37 @@ async def _process_video_generation_v2(video_id: str):
                         result_url = any_url_match.group(1)
                         print(f"[VideoTask] {video_id}: Found URL with pattern 4: {result_url[:100]}...")
         
-        print(f"[VideoTask] {video_id}: Generation loop finished. chunk_count={chunk_count}, result_url={result_url is not None}")
+        print(f"[VideoTask] {video_id}: Generation loop finished. chunk_count={chunk_count}, result_url={result_url is not None}, error_detected={error_detected is not None}")
         if last_chunk:
             print(f"[VideoTask] {video_id}: Last chunk (truncated): {last_chunk[:200]}...")
+        
+        # Check if error was detected during stream
+        if error_detected:
+            print(f"[VideoTask] {video_id}: Marking as failed due to error: {error_detected}")
+            task_info["status"] = "failed"
+            task_info["error"] = {
+                "message": error_detected,
+                "code": "content_policy_violation" if "policy" in error_detected.lower() else "generation_failed"
+            }
+            await db.update_task(video_id, "failed", 0.0, error_message=error_detected)
+            return
         
         # Try to get result from database if not found in stream
         if not result_url:
             print(f"[VideoTask] {video_id}: No URL found in stream, checking database...")
+            # First check if task failed in database
+            db_task = await db.get_task(video_id)
+            if db_task and db_task.status == "failed":
+                error_msg = db_task.error_message or "Generation failed"
+                print(f"[VideoTask] {video_id}: Task failed in database: {error_msg}")
+                task_info["status"] = "failed"
+                task_info["error"] = {
+                    "message": error_msg,
+                    "code": "generation_failed"
+                }
+                return
+            
+            # Look for completed task with same prompt
             all_tasks = await db.get_recent_tasks(limit=10)
             for db_task in all_tasks:
                 if db_task.prompt == task_info["prompt"] and db_task.status == "completed":
