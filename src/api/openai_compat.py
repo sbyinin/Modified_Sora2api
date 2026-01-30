@@ -1021,11 +1021,22 @@ async def _poll_lambda_task_result(task_id: str, token_obj, prompt: str,
                 # Re-submit task with new token
                 if payload:
                     print(f"[Lambda] Re-submitting task with new token...")
-                    current_task_id = await lambda_manager.create_task(
-                        token=current_token_obj.token,
-                        payload=payload
-                    )
-                    print(f"[Lambda] New task_id: {current_task_id}")
+                    try:
+                        current_task_id = await lambda_manager.create_task(
+                            token=current_token_obj.token,
+                            payload=payload
+                        )
+                        print(f"[Lambda] New task_id: {current_task_id}")
+                    except Exception as create_error:
+                        # Lambda create failed, treat this token as potentially problematic
+                        print(f"[Lambda] Failed to create task with token {current_token_obj.id}: {create_error}")
+                        # Release concurrency slot and try next token
+                        if generation_handler.concurrency_manager:
+                            await generation_handler.concurrency_manager.release_video(current_token_obj.id)
+                        disabled_token_ids.add(current_token_obj.id)
+                        # Don't count this as a retry attempt for dead token detection
+                        # but we still need to continue the loop
+                        continue
                     
                     # Update database to track the new actual task_id
                     # But keep the original task_id as the user-facing ID
@@ -1146,10 +1157,30 @@ async def _lambda_video_generation_stream(prompt: str, image_data: Optional[str]
             )
 
             # Create task via Lambda
-            current_task_id = await lambda_manager.create_task(
-                token=current_token_obj.token,
-                payload=payload
-            )
+            try:
+                current_task_id = await lambda_manager.create_task(
+                    token=current_token_obj.token,
+                    payload=payload
+                )
+            except Exception as create_error:
+                # Lambda create failed, release slot and try next token
+                print(f"[Lambda Stream] Failed to create task with token {current_token_obj.id}: {create_error}")
+                if generation_handler.concurrency_manager:
+                    await generation_handler.concurrency_manager.release_video(current_token_obj.id)
+                disabled_token_ids.add(current_token_obj.id)
+                
+                if retry_attempt < max_retries - 1:
+                    yield generation_handler._format_stream_chunk(
+                        reasoning_content=f"Lambda task creation failed. Trying with a different token...",
+                        stage="retry",
+                        status="started"
+                    )
+                    await asyncio.sleep(1.0)
+                    continue
+                else:
+                    # No more retries
+                    error_msg = f"Failed to create task after {max_retries} attempts: {str(create_error)}"
+                    raise Exception(error_msg)
 
             # Create DB task only on first attempt
             if retry_attempt == 0:
