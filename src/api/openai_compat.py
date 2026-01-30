@@ -913,7 +913,8 @@ async def _poll_lambda_task_result(task_id: str, token_obj, prompt: str,
                 stream=False,
                 prompt=prompt,
                 token_id=current_token_obj.id,
-                release_video_slot=False
+                release_video_slot=False,
+                db_task_id=task_id
             ):
                 pass
 

@@ -991,12 +991,14 @@ class GenerationHandler:
     async def _poll_task_result(self, task_id: str, token: str, is_video: bool,
                                 stream: bool, prompt: str, token_id: int = None,
                                 use_pending_v1: bool = False,
-                                release_video_slot: bool = True) -> AsyncGenerator[str, None]:
+                                release_video_slot: bool = True,
+                                db_task_id: Optional[str] = None) -> AsyncGenerator[str, None]:
         """Poll for task result with timeout
         
         Args:
             use_pending_v1: If True, use /nf/pending (v1) for polling instead of /nf/pending/v2
             release_video_slot: If False, caller manages video concurrency slot release
+            db_task_id: If provided, write DB/cache updates to this task_id while polling the actual task_id
             
         This method uses adaptive polling intervals based on task progress:
         - 20s when progress < 30%
@@ -1019,6 +1021,10 @@ class GenerationHandler:
         last_progress = 0
         last_db_progress = 0
         start_time = time.time()
+        if db_task_id is None:
+            db_task_id = task_id
+        elif db_task_id != task_id:
+            debug_logger.log_info(f"Polling actual task_id={task_id} for user_task_id={db_task_id}")
         last_heartbeat_time = start_time  # Track last heartbeat for image generation
         heartbeat_interval = 10  # Send heartbeat every 10 seconds for image generation
         last_status_output_time = start_time  # Track last status output time for video generation
@@ -1065,12 +1071,12 @@ class GenerationHandler:
                     await self.concurrency_manager.release_video(token_id)
                     debug_logger.log_info(f"Released concurrency slot for token {token_id} due to timeout")
 
-                await self.db.update_task(task_id, "failed", 0, error_message=f"Generation timeout after {elapsed_time:.1f} seconds")
+                await self.db.update_task(db_task_id, "failed", 0, error_message=f"Generation timeout after {elapsed_time:.1f} seconds")
                 try:
                     cache_extra = {"token_id": token_id} if token_id is not None else {}
                     cache_extra["error_message"] = f"Generation timeout after {elapsed_time:.1f} seconds"
                     await redis_mgr.cache_task_progress(
-                        task_id,
+                        db_task_id,
                         0,
                         "failed",
                         extra_data=cache_extra
@@ -1080,7 +1086,7 @@ class GenerationHandler:
                         f"Failed to cache timeout for {task_id}: {cache_error}"
                     )
                 await self.db.update_request_log_by_task_id(
-                    task_id,
+                    db_task_id,
                     response_body=json.dumps({
                         "error": f"Generation timeout after {elapsed_time:.1f} seconds"
                     }),
@@ -1127,9 +1133,9 @@ class GenerationHandler:
                             if status == "failed":
                                 error_msg = task.get("error_message", "Video generation failed")
                                 debug_logger.log_info(f"Task {task_id} failed: {error_msg}")
-                                await self.db.update_task(task_id, "failed", progress_pct, error_message=error_msg)
+                                await self.db.update_task(db_task_id, "failed", progress_pct, error_message=error_msg)
                                 await self.db.update_request_log_by_task_id(
-                                    task_id,
+                                    db_task_id,
                                     response_body=json.dumps({"error": error_msg}),
                                     status_code=500,
                                     duration=time.time() - start_time
@@ -1143,7 +1149,7 @@ class GenerationHandler:
                             try:
                                 cache_extra = {"token_id": token_id} if token_id is not None else {}
                                 await redis_mgr.cache_task_progress(
-                                    task_id,
+                                    db_task_id,
                                     progress_pct,
                                     status,
                                     extra_data=cache_extra
@@ -1155,7 +1161,7 @@ class GenerationHandler:
 
                             if abs(progress_pct - last_db_progress) >= db_update_threshold:
                                 try:
-                                    await self.db.update_task(task_id, "processing", progress_pct)
+                                    await self.db.update_task(db_task_id, "processing", progress_pct)
                                     last_db_progress = progress_pct
                                 except Exception as update_error:
                                     debug_logger.log_info(
@@ -1234,7 +1240,7 @@ class GenerationHandler:
                                     generation_id = current_generation_id
                                     debug_logger.log_info(f"Generation ID: {generation_id}")
                                     try:
-                                        await self.db.update_task_generation_id(task_id, generation_id)
+                                        await self.db.update_task_generation_id(db_task_id, generation_id)
                                     except Exception as update_error:
                                         debug_logger.log_info(
                                             f"Failed to update generation_id for {task_id}: {update_error}"
@@ -1243,7 +1249,7 @@ class GenerationHandler:
                                         cache_extra = {"token_id": token_id} if token_id is not None else {}
                                         cache_extra["generation_id"] = generation_id
                                         await redis_mgr.cache_task_progress(
-                                            task_id,
+                                            db_task_id,
                                             last_progress,
                                             "processing",
                                             extra_data=cache_extra
@@ -1281,7 +1287,7 @@ class GenerationHandler:
                                         cache_extra = {"token_id": token_id} if token_id is not None else {}
                                         cache_extra["permalink"] = permalink
                                         await redis_mgr.cache_task_progress(
-                                            task_id,
+                                            db_task_id,
                                             last_progress,
                                             "processing",
                                             extra_data=cache_extra
@@ -1310,12 +1316,12 @@ class GenerationHandler:
                                     )
 
                                     # Update task status
-                                    await self.db.update_task(task_id, "failed", 0, error_message=error_message)
+                                    await self.db.update_task(db_task_id, "failed", 0, error_message=error_message)
                                     try:
                                         cache_extra = {"token_id": token_id} if token_id is not None else {}
                                         cache_extra["error_message"] = error_message
                                         await redis_mgr.cache_task_progress(
-                                            task_id,
+                                            db_task_id,
                                             0,
                                             "failed",
                                             extra_data=cache_extra
@@ -1325,7 +1331,7 @@ class GenerationHandler:
                                             f"Failed to cache failed task for {task_id}: {cache_error}"
                                         )
                                     await self.db.update_request_log_by_task_id(
-                                        task_id,
+                                        db_task_id,
                                         response_body=json.dumps({"error": error_message}),
                                         status_code=400,
                                         duration=time.time() - start_time
@@ -1726,11 +1732,11 @@ class GenerationHandler:
                                             )
 
                                     await self.db.update_task(
-                                        task_id, "completed", 100.0,
+                                        db_task_id, "completed", 100.0,
                                         result_urls=json.dumps(local_urls)
                                     )
                                     await self.db.update_request_log_by_task_id(
-                                        task_id,
+                                        db_task_id,
                                         response_body=json.dumps({"task_id": task_id, "status": "success"}),
                                         status_code=200,
                                         duration=time.time() - start_time
@@ -1750,9 +1756,9 @@ class GenerationHandler:
 
                             elif status == "failed":
                                 error_msg = task_resp.get("error_message", "Generation failed")
-                                await self.db.update_task(task_id, "failed", progress, error_message=error_msg)
+                                await self.db.update_task(db_task_id, "failed", progress, error_message=error_msg)
                                 await self.db.update_request_log_by_task_id(
-                                    task_id,
+                                    db_task_id,
                                     response_body=json.dumps({"error": error_msg}),
                                     status_code=500,
                                     duration=time.time() - start_time
@@ -1763,7 +1769,7 @@ class GenerationHandler:
                                 # Update progress only if changed significantly
                                 if progress > last_progress + 20:  # Update every 20%
                                     last_progress = progress
-                                    await self.db.update_task(task_id, "processing", progress)
+                                    await self.db.update_task(db_task_id, "processing", progress)
 
                                     if stream:
                                         yield self._format_stream_chunk(
@@ -1822,12 +1828,12 @@ class GenerationHandler:
             await self.concurrency_manager.release_video(token_id)
             debug_logger.log_info(f"Released concurrency slot for token {token_id} due to unexpected loop exit")
 
-        await self.db.update_task(task_id, "failed", 0, error_message=f"Generation timeout after {timeout} seconds")
+        await self.db.update_task(db_task_id, "failed", 0, error_message=f"Generation timeout after {timeout} seconds")
         try:
             cache_extra = {"token_id": token_id} if token_id is not None else {}
             cache_extra["error_message"] = f"Generation timeout after {timeout} seconds"
             await redis_mgr.cache_task_progress(
-                task_id,
+                db_task_id,
                 0,
                 "failed",
                 extra_data=cache_extra
@@ -1837,7 +1843,7 @@ class GenerationHandler:
                 f"Failed to cache timeout for {task_id}: {cache_error}"
             )
         await self.db.update_request_log_by_task_id(
-            task_id,
+            db_task_id,
             response_body=json.dumps({
                 "error": f"Generation timeout after {timeout} seconds"
             }),
