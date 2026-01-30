@@ -863,7 +863,11 @@ class TokenManager:
             email = user_info.get("email", jwt_email or "")
             name = user_info.get("name") or ""
         except Exception as e:
-            # If API call fails, use JWT data
+            error_msg = str(e)
+            # Re-raise if it's a 401 error (token invalid/expired)
+            if "401" in error_msg or "token_invalidated" in error_msg.lower() or "unauthorized" in error_msg.lower():
+                raise ValueError(f"Token 无效或已过期: {error_msg}")
+            # If API call fails for other reasons, use JWT data
             email = jwt_email or ""
             name = email.split("@")[0] if email else ""
 
@@ -884,9 +888,9 @@ class TokenManager:
                 subscription_end = parser.parse(sub_info["subscription_end"])
         except Exception as e:
             error_msg = str(e)
-            # Re-raise if it's a critical error (token expired)
-            if "Token已过期" in error_msg:
-                raise
+            # Re-raise if it's a critical error (token expired or 401)
+            if "Token已过期" in error_msg or "401" in error_msg:
+                raise ValueError(f"Token 无效或已过期: {error_msg}")
             # If API call fails, subscription info will be None
             print(f"Failed to get subscription info: {e}")
 
