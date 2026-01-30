@@ -1032,6 +1032,7 @@ class GenerationHandler:
         post_link_emitted = False
         generation_id = None
         draft_url_missing_count = 0
+        missing_task_start_time = None  # Track how long task is missing from pending/drafts
         draft_pending_last_emit = start_time
         draft_pending_emit_interval = 30
         
@@ -1119,6 +1120,7 @@ class GenerationHandler:
                         if task.get("id") == task_id:
                             task_found = True
                             draft_url_missing_count = 0
+                            missing_task_start_time = None  # Task found, reset missing timer
                             # Update progress
                             progress_pct = task.get("progress_pct")
                             # Handle null progress at the beginning
@@ -1234,6 +1236,8 @@ class GenerationHandler:
                         draft_pending = False
                         for item in items:
                             if item.get("task_id") == task_id:
+                                # Task found in drafts, reset missing-task timer
+                                missing_task_start_time = None
                                 # Check for content violation
                                 current_generation_id = item.get("id")
                                 if current_generation_id and current_generation_id != generation_id:
@@ -1361,6 +1365,26 @@ class GenerationHandler:
 
                                     # Stop polling immediately
                                     return
+                        
+                        # If still not found in drafts, track missing time
+                        if not draft_pending:
+                            if missing_task_start_time is None:
+                                missing_task_start_time = time.time()
+                            missing_duration = time.time() - missing_task_start_time
+                            if dead_token_config.enabled and token_id and missing_duration >= dead_token_config.zero_progress_timeout:
+                                debug_logger.log_info(
+                                    f"Dead token detected: token_id={token_id}, task_id={task_id}, "
+                                    f"not found in pending/drafts for {missing_duration:.1f}s "
+                                    f"(threshold: {dead_token_config.zero_progress_timeout}s)"
+                                )
+                                if self.concurrency_manager and release_video_slot:
+                                    await self.concurrency_manager.release_video(token_id)
+                                    debug_logger.log_info(f"Released concurrency slot for dead token {token_id}")
+                                raise DeadTokenError(
+                                    token_id=token_id,
+                                    task_id=task_id,
+                                    message=f"Token {token_id} appears dead: task missing for {missing_duration:.1f}s"
+                                )
                                 
                                 if not url:
                                     draft_url_missing_count += 1
