@@ -86,6 +86,10 @@ class _MySQLConnectionWrapper:
 
 class Database:
     """Database manager with support for SQLite and MySQL"""
+    
+    # Class-level MySQL pool - shared across all instances
+    _mysql_pool = None
+    _mysql_pool_lock = asyncio.Lock()  # Initialize at class definition time
 
     def __init__(self, db_path: str = None):
         # Determine database type from config
@@ -93,7 +97,7 @@ class Database:
         
         if self.db_type == "mysql":
             self.db_path = None
-            self._mysql_pool = None
+            # Pool is now a class variable, no need to set here
         else:
             # SQLite
             if db_path is None:
@@ -157,24 +161,30 @@ class Database:
         return Path(self.db_path).exists()
 
     async def _get_mysql_pool(self):
-        """Get or create MySQL connection pool"""
-        if self._mysql_pool is None:
-            import aiomysql
-            self._mysql_pool = await aiomysql.create_pool(
-                host=config.mysql_host,
-                port=config.mysql_port,
-                user=config.mysql_user,
-                password=config.mysql_password,
-                db=config.mysql_database,
-                minsize=5,
-                maxsize=config.mysql_pool_size,
-                autocommit=False,
-                charset='utf8mb4',
-                cursorclass=aiomysql.DictCursor,
-                connect_timeout=60
-            )
-            print(f"✅ MySQL pool initialized (host: {config.mysql_host}, pool_size: {config.mysql_pool_size})")
-        return self._mysql_pool
+        """Get or create MySQL connection pool (shared across all Database instances)"""
+        # Fast path: pool already exists
+        if Database._mysql_pool is not None:
+            return Database._mysql_pool
+        
+        async with Database._mysql_pool_lock:
+            # Double-check after acquiring lock
+            if Database._mysql_pool is None:
+                import aiomysql
+                Database._mysql_pool = await aiomysql.create_pool(
+                    host=config.mysql_host,
+                    port=config.mysql_port,
+                    user=config.mysql_user,
+                    password=config.mysql_password,
+                    db=config.mysql_database,
+                    minsize=5,
+                    maxsize=config.mysql_pool_size,
+                    autocommit=False,
+                    charset='utf8mb4',
+                    cursorclass=aiomysql.DictCursor,
+                    connect_timeout=60
+                )
+                print(f"✅ MySQL pool initialized (host: {config.mysql_host}, pool_size: {config.mysql_pool_size})")
+        return Database._mysql_pool
 
     @asynccontextmanager
     async def _connect(self, readonly: bool = False):
