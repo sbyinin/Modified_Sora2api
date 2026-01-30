@@ -1025,128 +1025,197 @@ async def _poll_lambda_task_result(task_id: str, token_obj, prompt: str,
 
 async def _lambda_video_generation_stream(prompt: str, image_data: Optional[str], style_id: Optional[str],
                                           model_id: str, model_config: dict):
-    """Generate video using Lambda with URL polling"""
+    """Generate video using Lambda with URL polling and dead token retry support"""
     from ..services.lambda_manager import lambda_manager
+    from ..services.generation_handler import DeadTokenError, get_dead_token_config
     
-    token_obj = None
-    try:
-        token_obj = await generation_handler._acquire_token_for_generation(is_image=False, is_video=True)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
+    dead_token_config = get_dead_token_config()
+    max_retries = dead_token_config.max_retries if dead_token_config.enabled else 1
+    disabled_token_ids = set()
+    
     start_time = time.time()
-    task_id = None
+    db_task_id = None  # The user-facing task ID (first one created)
+    current_token_obj = None
+    current_task_id = None
     log_id = None
+    is_first_chunk = True
 
-    try:
-        yield generation_handler._format_stream_chunk(
-            reasoning_content="Initializing generation request...",
-            stage="generation",
-            status="started",
-            is_first=True
-        )
-
-        media_id = None
-        if image_data:
-            yield generation_handler._format_stream_chunk(
-                reasoning_content="Uploading image to server...",
-                stage="upload",
-                status="started"
+    for retry_attempt in range(max_retries):
+        try:
+            # Acquire token (excluding disabled ones)
+            current_token_obj = await generation_handler._acquire_token_for_generation(
+                is_image=False, 
+                is_video=True,
+                excluded_token_ids=disabled_token_ids
             )
-            image_bytes = generation_handler._decode_base64_image(image_data)
-            media_id = await generation_handler.sora_client.upload_image(image_bytes, token_obj.token)
-            yield generation_handler._format_stream_chunk(
-                reasoning_content="Image uploaded successfully. Proceeding to generation...",
-                stage="upload",
-                status="completed"
+            
+            if retry_attempt == 0:
+                yield generation_handler._format_stream_chunk(
+                    reasoning_content="Initializing generation request...",
+                    stage="generation",
+                    status="started",
+                    is_first=True
+                )
+                is_first_chunk = False
+            else:
+                yield generation_handler._format_stream_chunk(
+                    reasoning_content=f"Retrying with different token (attempt {retry_attempt + 1}/{max_retries})...",
+                    stage="retry",
+                    status="started"
+                )
+
+            # Upload image (only on first attempt or if needed)
+            media_id = None
+            if image_data:
+                if retry_attempt == 0:
+                    yield generation_handler._format_stream_chunk(
+                        reasoning_content="Uploading image to server...",
+                        stage="upload",
+                        status="started"
+                    )
+                image_bytes = generation_handler._decode_base64_image(image_data)
+                media_id = await generation_handler.sora_client.upload_image(image_bytes, current_token_obj.token)
+                if retry_attempt == 0:
+                    yield generation_handler._format_stream_chunk(
+                        reasoning_content="Image uploaded successfully. Proceeding to generation...",
+                        stage="upload",
+                        status="completed"
+                    )
+
+            n_frames = model_config.get("n_frames", 300)
+            payload = _build_nf_create_payload(
+                prompt=prompt,
+                orientation=model_config.get("orientation", "landscape"),
+                n_frames=n_frames,
+                media_id=media_id,
+                style_id=style_id,
+                model=model_config.get("model", "sy_8_20251208"),
+                size=model_config.get("size", "small")
             )
 
-        n_frames = model_config.get("n_frames", 300)
-        payload = _build_nf_create_payload(
-            prompt=prompt,
-            orientation=model_config.get("orientation", "landscape"),
-            n_frames=n_frames,
-            media_id=media_id,
-            style_id=style_id,
-            model=model_config.get("model", "sy_8_20251208"),
-            size=model_config.get("size", "small")
-        )
-
-        # Use Lambda manager for URL polling
-        task_id = await lambda_manager.create_task(
-            token=token_obj.token,
-            payload=payload
-        )
-
-        from ..core.models import Task
-        task = Task(
-            task_id=task_id,
-            token_id=token_obj.id,
-            model=model_id,
-            prompt=prompt,
-            status="processing",
-            progress=0.0
-        )
-        await generation_handler.db.create_task(task)
-
-        log_id = await generation_handler._log_request_start(
-            token_obj.id,
-            task_id,
-            "generate_video",
-            {"model": model_id, "prompt": prompt, "has_image": image_data is not None, "via_lambda": True}
-        )
-        await generation_handler.token_manager.record_usage(token_obj.id, is_video=True)
-
-        async for chunk in generation_handler._poll_task_result(
-            task_id=task_id,
-            token=token_obj.token,
-            is_video=True,
-            stream=True,
-            prompt=prompt,
-            token_id=token_obj.id,
-            release_video_slot=False
-        ):
-            yield chunk
-
-        duration = time.time() - start_time
-        await generation_handler.token_manager.record_success(token_obj.id, is_video=True)
-        await generation_handler._log_request_complete(
-            log_id,
-            {"task_id": task_id, "status": "success"},
-            200,
-            duration
-        )
-    except (asyncio.CancelledError, GeneratorExit):
-        if task_id:
-            await generation_handler.db.update_task(task_id, "cancelled", 0, error_message="Client disconnected")
-            await generation_handler.db.update_request_log_by_task_id(
-                task_id,
-                response_body=json.dumps({"error": "Client disconnected"}),
-                status_code=499,
-                duration=time.time() - start_time
+            # Create task via Lambda
+            current_task_id = await lambda_manager.create_task(
+                token=current_token_obj.token,
+                payload=payload
             )
-        raise
-    except Exception as e:
-        duration = time.time() - start_time
-        if task_id:
-            await generation_handler.db.update_task(task_id, "failed", 0, error_message=str(e))
-            await generation_handler.db.update_request_log_by_task_id(
-                task_id,
-                response_body=json.dumps({"error": str(e)}),
-                status_code=500,
-                duration=duration
-            )
-        elif log_id:
+
+            # Create DB task only on first attempt
+            if retry_attempt == 0:
+                db_task_id = current_task_id
+                from ..core.models import Task
+                task = Task(
+                    task_id=db_task_id,
+                    token_id=current_token_obj.id,
+                    model=model_id,
+                    prompt=prompt,
+                    status="processing",
+                    progress=0.0
+                )
+                await generation_handler.db.create_task(task)
+
+                log_id = await generation_handler._log_request_start(
+                    current_token_obj.id,
+                    db_task_id,
+                    "generate_video",
+                    {"model": model_id, "prompt": prompt, "has_image": image_data is not None, "via_lambda": True}
+                )
+            
+            await generation_handler.token_manager.record_usage(current_token_obj.id, is_video=True)
+
+            # Poll task result with db_task_id for progress writes
+            async for chunk in generation_handler._poll_task_result(
+                task_id=current_task_id,
+                token=current_token_obj.token,
+                is_video=True,
+                stream=True,
+                prompt=prompt,
+                token_id=current_token_obj.id,
+                release_video_slot=False,
+                db_task_id=db_task_id
+            ):
+                yield chunk
+
+            # Success!
+            duration = time.time() - start_time
+            await generation_handler.token_manager.record_success(current_token_obj.id, is_video=True)
             await generation_handler._log_request_complete(
                 log_id,
-                {"error": str(e)},
-                500,
+                {"task_id": db_task_id, "actual_task_id": current_task_id, "status": "success"},
+                200,
                 duration
             )
-        raise
-    finally:
-        if token_obj and generation_handler.concurrency_manager:
-            await generation_handler.concurrency_manager.release_video(token_obj.id)
+            return  # Exit the retry loop on success
+            
+        except DeadTokenError as e:
+            print(f"[Lambda Stream] Dead token detected on attempt {retry_attempt + 1}/{max_retries}: token_id={e.token_id}")
+            
+            # Disable the dead token
+            await generation_handler.token_manager.disable_token(e.token_id)
+            disabled_token_ids.add(e.token_id)
+            print(f"[Lambda Stream] Auto-disabled dead token {e.token_id}")
+            
+            # Release concurrency slot for dead token
+            if generation_handler.concurrency_manager:
+                await generation_handler.concurrency_manager.release_video(e.token_id)
+            
+            # Notify user
+            yield generation_handler._format_stream_chunk(
+                reasoning_content=f"Dead token detected (progress stuck at 0%). Token has been disabled. {'Retrying with a different token...' if retry_attempt < max_retries - 1 else 'No more retries available.'}",
+                stage="dead_token",
+                status="detected",
+                details={"token_id": e.token_id, "retry_attempt": retry_attempt + 1, "max_retries": max_retries}
+            )
+            
+            if retry_attempt >= max_retries - 1:
+                # No more retries - update DB and raise
+                error_msg = f"Generation failed after {max_retries} attempts due to dead tokens. Last error: {str(e)}"
+                if db_task_id:
+                    await generation_handler.db.update_task(db_task_id, "failed", 0, error_message=error_msg)
+                    await generation_handler.db.update_request_log_by_task_id(
+                        db_task_id,
+                        response_body=json.dumps({"error": error_msg}),
+                        status_code=500,
+                        duration=time.time() - start_time
+                    )
+                raise Exception(error_msg)
+            
+            # Small delay before retry
+            await asyncio.sleep(1.0)
+            continue
+            
+        except (asyncio.CancelledError, GeneratorExit):
+            if db_task_id:
+                await generation_handler.db.update_task(db_task_id, "cancelled", 0, error_message="Client disconnected")
+                await generation_handler.db.update_request_log_by_task_id(
+                    db_task_id,
+                    response_body=json.dumps({"error": "Client disconnected"}),
+                    status_code=499,
+                    duration=time.time() - start_time
+                )
+            raise
+        except Exception as e:
+            duration = time.time() - start_time
+            if db_task_id:
+                await generation_handler.db.update_task(db_task_id, "failed", 0, error_message=str(e))
+                await generation_handler.db.update_request_log_by_task_id(
+                    db_task_id,
+                    response_body=json.dumps({"error": str(e)}),
+                    status_code=500,
+                    duration=duration
+                )
+            elif log_id:
+                await generation_handler._log_request_complete(
+                    log_id,
+                    {"error": str(e)},
+                    500,
+                    duration
+                )
+            raise
+        finally:
+            # Release concurrency slot for current token (if not already released due to dead token)
+            if current_token_obj and current_token_obj.id not in disabled_token_ids:
+                if generation_handler.concurrency_manager:
+                    await generation_handler.concurrency_manager.release_video(current_token_obj.id)
 
 @router.post("/v1/videos", status_code=200)
 async def create_video(
@@ -1336,17 +1405,30 @@ async def create_video(
                     )
 
                     await generation_handler.token_manager.record_usage(token_obj.id, is_video=True)
-                    asyncio.create_task(_poll_lambda_task_result(
-                        task_id=task_id,
-                        token_obj=token_obj,
-                        prompt=prompt,
-                        log_id=log_id,
-                        start_time=start_time,
-                        payload=payload,
-                        image_data=image_data,
-                        final_model=final_model,
-                        style_id=style_id
-                    ))
+                    
+                    # Create background task with proper exception handling
+                    async def _run_poll_with_error_handling():
+                        try:
+                            await _poll_lambda_task_result(
+                                task_id=task_id,
+                                token_obj=token_obj,
+                                prompt=prompt,
+                                log_id=log_id,
+                                start_time=start_time,
+                                payload=payload,
+                                image_data=image_data,
+                                final_model=final_model,
+                                style_id=style_id
+                            )
+                        except Exception as poll_error:
+                            print(f"[Lambda] Background poll failed for task {task_id}: {poll_error}")
+                            # Update task status to failed
+                            try:
+                                await db.update_task(task_id, "failed", 0, error_message=str(poll_error))
+                            except Exception as db_error:
+                                print(f"[Lambda] Failed to update task status: {db_error}")
+                    
+                    asyncio.create_task(_run_poll_with_error_handling())
 
                     return JSONResponse(
                         status_code=200,
