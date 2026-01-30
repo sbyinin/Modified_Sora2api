@@ -1832,6 +1832,9 @@ class GenerationHandler:
                 # Progress update for stream mode (fallback if no status from API)
                 # Note: With adaptive polling, we rely on actual progress updates rather than attempt counts
             
+            except DeadTokenError:
+                # Re-raise DeadTokenError so caller can handle retry logic
+                raise
             except Exception as e:
                 # Log the error but continue polling (timeout check at loop start will handle termination)
                 debug_logger.log_info(f"Polling error for task {task_id}: {str(e)}, continuing...")
