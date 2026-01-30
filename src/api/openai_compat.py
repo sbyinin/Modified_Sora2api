@@ -879,49 +879,147 @@ async def _post_lambda_create_task(lambda_url: str, lambda_key: Optional[str],
 
 
 async def _poll_lambda_task_result(task_id: str, token_obj, prompt: str,
-                                  log_id: Optional[int], start_time: float):
-    try:
-        async for _ in generation_handler._poll_task_result(
-            task_id=task_id,
-            token=token_obj.token,
-            is_video=True,
-            stream=False,
-            prompt=prompt,
-            token_id=token_obj.id,
-            release_video_slot=False
-        ):
-            pass
-
-        duration = time.time() - start_time
-        await generation_handler.token_manager.record_success(token_obj.id, is_video=True)
-        await generation_handler._log_request_complete(
-            log_id,
-            {"task_id": task_id, "status": "success"},
-            200,
-            duration
-        )
-    except Exception as e:
-        duration = time.time() - start_time
+                                  log_id: Optional[int], start_time: float,
+                                  payload: dict = None, image_data: str = None,
+                                  final_model: str = None, style_id: str = None):
+    """Poll Lambda task result with dead token retry support
+    
+    When a dead token is detected, this function will:
+    1. Disable the dead token
+    2. Acquire a new token
+    3. Re-submit the task with the new token
+    4. Continue polling
+    
+    The original task_id returned to user remains unchanged.
+    """
+    from ..services.generation_handler import DeadTokenError, get_dead_token_config
+    from ..services.lambda_manager import lambda_manager
+    from ..core.database import Database
+    
+    db = Database()
+    dead_token_config = get_dead_token_config()
+    max_retries = dead_token_config.max_retries if dead_token_config.enabled else 1
+    
+    current_token_obj = token_obj
+    current_task_id = task_id
+    disabled_token_ids = set()
+    
+    for retry_attempt in range(max_retries):
         try:
-            if log_id is not None:
-                await generation_handler.db.update_request_log(
-                    log_id,
-                    response_body=json.dumps({"error": str(e)}),
-                    status_code=500,
-                    duration=duration
+            async for _ in generation_handler._poll_task_result(
+                task_id=current_task_id,
+                token=current_token_obj.token,
+                is_video=True,
+                stream=False,
+                prompt=prompt,
+                token_id=current_token_obj.id,
+                release_video_slot=False
+            ):
+                pass
+
+            # Success
+            duration = time.time() - start_time
+            await generation_handler.token_manager.record_success(current_token_obj.id, is_video=True)
+            await generation_handler._log_request_complete(
+                log_id,
+                {"task_id": task_id, "actual_task_id": current_task_id, "status": "success"},
+                200,
+                duration
+            )
+            return
+            
+        except DeadTokenError as e:
+            print(f"[Lambda] Dead token detected on attempt {retry_attempt + 1}/{max_retries}: token_id={e.token_id}, task_id={e.task_id}")
+            
+            # Disable the dead token
+            await generation_handler.token_manager.disable_token(e.token_id)
+            disabled_token_ids.add(e.token_id)
+            print(f"[Lambda] Auto-disabled dead token {e.token_id}")
+            
+            # Release concurrency slot for dead token
+            if generation_handler.concurrency_manager:
+                await generation_handler.concurrency_manager.release_video(e.token_id)
+            
+            if retry_attempt >= max_retries - 1:
+                # No more retries
+                raise Exception(
+                    f"Generation failed after {max_retries} attempts due to dead tokens. "
+                    f"Last error: {str(e)}"
                 )
-            else:
-                await generation_handler.db.update_request_log_by_task_id(
-                    task_id,
-                    response_body=json.dumps({"error": str(e)}),
-                    status_code=500,
-                    duration=duration
+            
+            # Try to acquire a new token and re-submit
+            try:
+                print(f"[Lambda] Acquiring new token for retry...")
+                current_token_obj = await generation_handler._acquire_token_for_generation(
+                    is_image=False,
+                    is_video=True,
+                    excluded_token_ids=disabled_token_ids
                 )
-        except Exception as log_error:
-            print(f"Warning: failed to update request log for task {task_id}: {log_error}")
-    finally:
-        if generation_handler.concurrency_manager:
-            await generation_handler.concurrency_manager.release_video(token_obj.id)
+                print(f"[Lambda] Got new token {current_token_obj.id}")
+                
+                # Re-upload image if needed
+                if payload and image_data:
+                    print(f"[Lambda] Re-uploading image with new token...")
+                    image_bytes = generation_handler._decode_base64_image(image_data)
+                    media_id = await generation_handler.sora_client.upload_image(image_bytes, current_token_obj.token)
+                    if media_id:
+                        payload["inpaint_items"] = [{"kind": "upload", "upload_id": media_id}]
+                
+                # Re-submit task with new token
+                if payload:
+                    print(f"[Lambda] Re-submitting task with new token...")
+                    current_task_id = await lambda_manager.create_task(
+                        token=current_token_obj.token,
+                        payload=payload
+                    )
+                    print(f"[Lambda] New task_id: {current_task_id}")
+                    
+                    # Update database to track the new actual task_id
+                    # But keep the original task_id as the user-facing ID
+                    await db.update_task(
+                        task_id,  # Original user-facing ID
+                        "processing",
+                        0.0,
+                        error_message=None  # Clear any previous error
+                    )
+                else:
+                    # No payload, can't re-submit
+                    raise Exception("Cannot retry: no payload available for re-submission")
+                    
+                await asyncio.sleep(1.0)
+                continue
+                
+            except Exception as retry_error:
+                print(f"[Lambda] Failed to retry: {retry_error}")
+                raise
+                
+        except Exception as e:
+            # Non-dead-token error
+            duration = time.time() - start_time
+            try:
+                if log_id is not None:
+                    await generation_handler.db.update_request_log(
+                        log_id,
+                        response_body=json.dumps({"error": str(e)}),
+                        status_code=500,
+                        duration=duration
+                    )
+                else:
+                    await generation_handler.db.update_request_log_by_task_id(
+                        task_id,
+                        response_body=json.dumps({"error": str(e)}),
+                        status_code=500,
+                        duration=duration
+                    )
+                # Update task status to failed
+                await db.update_task(task_id, "failed", 0.0, error_message=str(e))
+            except Exception as log_error:
+                print(f"Warning: failed to update request log for task {task_id}: {log_error}")
+            return
+    
+    # Should not reach here
+    if generation_handler.concurrency_manager:
+        await generation_handler.concurrency_manager.release_video(current_token_obj.id)
 
 
 async def _lambda_video_generation_stream(prompt: str, image_data: Optional[str], style_id: Optional[str],
@@ -1237,7 +1335,17 @@ async def create_video(
                     )
 
                     await generation_handler.token_manager.record_usage(token_obj.id, is_video=True)
-                    asyncio.create_task(_poll_lambda_task_result(task_id, token_obj, prompt, log_id, start_time))
+                    asyncio.create_task(_poll_lambda_task_result(
+                        task_id=task_id,
+                        token_obj=token_obj,
+                        prompt=prompt,
+                        log_id=log_id,
+                        start_time=start_time,
+                        payload=payload,
+                        image_data=image_data,
+                        final_model=final_model,
+                        style_id=style_id
+                    ))
 
                     return JSONResponse(
                         status_code=200,
