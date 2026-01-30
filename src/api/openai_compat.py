@@ -20,6 +20,7 @@ import uuid
 import re
 from ..core.auth import verify_api_key_header
 from ..services.generation_handler import GenerationHandler, MODEL_CONFIG
+from ..core.config import config
 from ..core.models import CharacterOptions, ChatCompletionRequest
 
 router = APIRouter()
@@ -672,6 +673,29 @@ async def _stream_character_from_image(
 # Background task storage for async video generation
 import asyncio
 _video_tasks: dict = {}  # video_id -> task_info dict
+_VIDEO_TASK_TTL_SECONDS = max(3600, int(config.video_timeout) * 2)
+_VIDEO_TASK_CLEANUP_INTERVAL = 300
+_last_video_task_cleanup = 0.0
+
+
+def _touch_video_task(task_info: dict, now: Optional[float] = None, ttl: Optional[int] = None) -> None:
+    now = now or time.time()
+    ttl = ttl if ttl is not None else _VIDEO_TASK_TTL_SECONDS
+    task_info["expires_at"] = int(now + ttl)
+
+
+def _prune_video_tasks(now: Optional[float] = None) -> None:
+    global _last_video_task_cleanup
+    now = now or time.time()
+    if now - _last_video_task_cleanup < _VIDEO_TASK_CLEANUP_INTERVAL:
+        return
+    _last_video_task_cleanup = now
+    expired = [
+        video_id for video_id, info in list(_video_tasks.items())
+        if isinstance(info, dict) and info.get("expires_at") and info["expires_at"] <= now
+    ]
+    for video_id in expired:
+        _video_tasks.pop(video_id, None)
 
 
 async def _process_video_generation_v2(video_id: str):
@@ -681,7 +705,7 @@ async def _process_video_generation_v2(video_id: str):
     """
     import re
     from ..core.database import Database
-    
+    _prune_video_tasks()
     task_info = _video_tasks.get(video_id)
     if not task_info or not isinstance(task_info, dict):
         print(f"[VideoTask] {video_id}: task_info not found in _video_tasks")
@@ -691,6 +715,7 @@ async def _process_video_generation_v2(video_id: str):
     
     try:
         task_info["status"] = "in_progress"
+        _touch_video_task(task_info)
         print(f"[VideoTask] {video_id}: Starting generation...")
         
         # Generate video
@@ -705,7 +730,8 @@ async def _process_video_generation_v2(video_id: str):
             image=task_info.get("image"),
             remix_target_id=task_info.get("remix_target_id"),
             stream=True,
-            style_id=task_info.get("style_id")
+            style_id=task_info.get("style_id"),
+            db_task_id=video_id
         ):
             chunk_count += 1
             if isinstance(chunk, str):
@@ -742,11 +768,25 @@ async def _process_video_generation_v2(video_id: str):
                     task_info["generation_id"] = metadata.get("generation_id")
                 if metadata.get("permalink"):
                     task_info["permalink"] = metadata.get("permalink")
-                # Extract progress percentage if present
-                match = re.search(r'(\d+)%', chunk)
-                if match:
-                    progress = int(match.group(1))
+                # Extract progress percentage if present (prefer parsed reasoning_content)
+                progress = None
+                parsed = _parse_sse_chunk(chunk)
+                if parsed:
+                    choices = parsed.get("choices", [])
+                    if choices:
+                        delta = choices[0].get("delta", {})
+                        reasoning = delta.get("reasoning_content", "")
+                        if isinstance(reasoning, str):
+                            match = re.search(r'(\d+)%', reasoning)
+                            if match:
+                                progress = int(match.group(1))
+                if progress is None:
+                    match = re.search(r'(\d+)%', chunk)
+                    if match:
+                        progress = int(match.group(1))
+                if progress is not None:
                     task_info["progress"] = progress
+                    _touch_video_task(task_info)
                 
                 # Check for result URL in chunk - try multiple patterns
                 # Pattern 1: URL in video tag (e.g., <video src='url'>)
@@ -811,63 +851,83 @@ async def _process_video_generation_v2(video_id: str):
                 "message": error_detected,
                 "code": "content_policy_violation" if "policy" in error_detected.lower() else "generation_failed"
             }
+            _touch_video_task(task_info)
             await db.update_task(video_id, "failed", 0.0, error_message=error_detected)
             return
         
         # Try to get result from database if not found in stream
         if not result_url:
             print(f"[VideoTask] {video_id}: No URL found in stream, checking database...")
-            # First check if task failed in database
+            # First check database for completed/failed status
             db_task = await db.get_task(video_id)
-            if db_task and db_task.status == "failed":
-                error_msg = db_task.error_message or "Generation failed"
-                print(f"[VideoTask] {video_id}: Task failed in database: {error_msg}")
-                task_info["status"] = "failed"
-                task_info["error"] = {
-                    "message": error_msg,
-                    "code": "generation_failed"
-                }
-                return
+            if db_task:
+                if db_task.status == "failed":
+                    error_msg = db_task.error_message or "Generation failed"
+                    print(f"[VideoTask] {video_id}: Task failed in database: {error_msg}")
+                    task_info["status"] = "failed"
+                    task_info["error"] = {
+                        "message": error_msg,
+                        "code": "generation_failed"
+                    }
+                    return
+                if db_task.status == "completed" and db_task.result_urls:
+                    try:
+                        urls = json.loads(db_task.result_urls)
+                        if urls:
+                            result_url = urls[0] if isinstance(urls, list) else urls
+                    except Exception:
+                        result_url = db_task.result_urls
+                    if result_url:
+                        print(f"[VideoTask] {video_id}: Found URL in database (completed task)")
+                    if db_task.generation_id and not task_info.get("generation_id"):
+                        task_info["generation_id"] = db_task.generation_id
+                    if db_task.permalink and not task_info.get("permalink"):
+                        task_info["permalink"] = db_task.permalink
             
-            # Look for completed task with same prompt
-            all_tasks = await db.get_recent_tasks(limit=10)
-            for db_task in all_tasks:
-                if db_task.prompt == task_info["prompt"] and db_task.status == "completed":
-                    if db_task.result_urls:
-                        try:
-                            urls = json.loads(db_task.result_urls)
-                            if urls:
-                                result_url = urls[0] if isinstance(urls, list) else urls
-                        except:
-                            result_url = db_task.result_urls
-                        print(f"[VideoTask] {video_id}: Found URL in database: {result_url[:100] if result_url else 'None'}...")
-                        break
+            if not result_url:
+                # Look for completed task with same prompt
+                all_tasks = await db.get_recent_tasks(limit=10)
+                for db_task in all_tasks:
+                    if db_task.prompt == task_info["prompt"] and db_task.status == "completed":
+                        if db_task.result_urls:
+                            try:
+                                urls = json.loads(db_task.result_urls)
+                                if urls:
+                                    result_url = urls[0] if isinstance(urls, list) else urls
+                            except Exception:
+                                result_url = db_task.result_urls
+                            print(f"[VideoTask] {video_id}: Found URL in database: {result_url[:100] if result_url else 'None'}...")
+                            break
         
+        if not result_url:
+            error_msg = "Video URL not found after generation"
+            print(f"[VideoTask] {video_id}: {error_msg}")
+            task_info["status"] = "failed"
+            task_info["error"] = {
+                "message": error_msg,
+                "code": "result_not_found"
+            }
+            _touch_video_task(task_info)
+            await db.update_task(video_id, "failed", 0.0, error_message=error_msg)
+            return
+
         # Mark as completed (use new-api-main compatible status)
         print(f"[VideoTask] {video_id}: Marking as completed. result_url={result_url is not None}")
         task_info["status"] = "completed"
         task_info["progress"] = 100
         task_info["completed_at"] = int(time.time())  # Unix timestamp in seconds
         task_info["result_url"] = result_url
+        _touch_video_task(task_info)
         
         # Update database
-        if result_url:
-            await db.update_task(
-                video_id,
-                "completed",
-                100.0,
-                result_urls=result_url,
-                generation_id=task_info.get("generation_id"),
-                permalink=task_info.get("permalink")
-            )
-        else:
-            await db.update_task(
-                video_id,
-                "completed",
-                100.0,
-                generation_id=task_info.get("generation_id"),
-                permalink=task_info.get("permalink")
-            )
+        await db.update_task(
+            video_id,
+            "completed",
+            100.0,
+            result_urls=result_url,
+            generation_id=task_info.get("generation_id"),
+            permalink=task_info.get("permalink")
+        )
         
         print(f"[VideoTask] {video_id}: Task completed successfully. Status in memory: {task_info['status']}")
     
@@ -880,6 +940,7 @@ async def _process_video_generation_v2(video_id: str):
             "message": str(e),
             "code": "generation_failed"
         }
+        _touch_video_task(task_info)
         try:
             await db.update_task(video_id, "failed", 0.0, error_message=str(e))
         except Exception:
@@ -1345,6 +1406,7 @@ async def create_video(
     ```
     """
     try:
+        _prune_video_tasks()
         # Check if JSON body
         content_type = request.headers.get("content-type", "")
         if "application/json" in content_type:
@@ -1572,7 +1634,7 @@ async def create_video(
                 "progress": 0,
                 "created_at": created_at,
                 "completed_at": None,
-                "expires_at": None,
+                "expires_at": int(created_at + _VIDEO_TASK_TTL_SECONDS),
                 "result_url": None,
                 "generation_id": None,
                 "permalink": None,
@@ -1680,6 +1742,7 @@ async def get_video(
     - error: Error details {message, code} (only when status="failed")
     - metadata: Extended metadata (optional)
     """
+    _prune_video_tasks()
     # First check in-memory tasks
     task_info = _video_tasks.get(video_id)
     if task_info and isinstance(task_info, dict):
@@ -1802,6 +1865,7 @@ async def get_video_content(
     """
     from fastapi.responses import RedirectResponse
     
+    _prune_video_tasks()
     # First check in-memory tasks
     task_info = _video_tasks.get(video_id)
     if task_info and isinstance(task_info, dict):
@@ -1911,6 +1975,7 @@ async def remix_video(
     ```
     """
     try:
+        _prune_video_tasks()
         # Check if JSON body
         content_type = request.headers.get("content-type", "")
         if "application/json" in content_type:
@@ -1997,7 +2062,7 @@ async def remix_video(
                 "progress": 0,
                 "created_at": created_at,
                 "completed_at": None,
-                "expires_at": None,
+                "expires_at": int(created_at + _VIDEO_TASK_TTL_SECONDS),
                 "result_url": None,
                 "generation_id": None,
                 "permalink": None,

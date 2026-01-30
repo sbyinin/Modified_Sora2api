@@ -574,7 +574,8 @@ class GenerationHandler:
                                stream: bool = True,
                                character_options: Optional[CharacterOptions] = None,
                                style_id: Optional[str] = None,
-                               use_pending_v1: bool = False) -> AsyncGenerator[str, None]:
+                               use_pending_v1: bool = False,
+                               db_task_id: Optional[str] = None) -> AsyncGenerator[str, None]:
         """Handle generation request with dead token retry support
 
         Args:
@@ -674,7 +675,8 @@ class GenerationHandler:
                     style_id=style_id,
                     use_pending_v1=use_pending_v1,
                     start_time=start_time,
-                    is_first_chunk=(retry_attempt == 0)
+                    is_first_chunk=(retry_attempt == 0),
+                    db_task_id=db_task_id
                 ):
                     yield chunk
                 
@@ -728,7 +730,8 @@ class GenerationHandler:
         style_id: Optional[str],
         use_pending_v1: bool,
         start_time: float,
-        is_first_chunk: bool = True
+        is_first_chunk: bool = True,
+        db_task_id: Optional[str] = None
     ) -> AsyncGenerator[str, None]:
         """Inner generation logic, separated for retry support"""
 
@@ -815,21 +818,31 @@ class GenerationHandler:
                     media_id=media_id
                 )
             
-            # Save task to database
-            task = Task(
-                task_id=task_id,
-                token_id=token_obj.id,
-                model=model,
-                prompt=prompt,
-                status="processing",
-                progress=0.0
-            )
-            await self.db.create_task(task)
+            # Save task to database (skip duplicate task creation if db_task_id differs)
+            task_record_id = db_task_id or task_id
+            if task_record_id == task_id:
+                task = Task(
+                    task_id=task_id,
+                    token_id=token_obj.id,
+                    model=model,
+                    prompt=prompt,
+                    status="processing",
+                    progress=0.0
+                )
+                await self.db.create_task(task)
+            else:
+                # Ensure user-facing task is marked as processing
+                try:
+                    await self.db.update_task(task_record_id, "processing", 0.0)
+                except Exception as update_error:
+                    debug_logger.log_info(
+                        f"Failed to update task status for {task_record_id}: {update_error}"
+                    )
             
             # Log request start (in-progress)
             log_id = await self._log_request_start(
                 token_obj.id,
-                task_id,
+                task_record_id,
                 f"generate_{model_config['type']}",
                 {"model": model, "prompt": prompt, "has_image": image is not None}
             )
@@ -840,7 +853,16 @@ class GenerationHandler:
             # Poll for results with timeout
             generation_completed = False
             try:
-                async for chunk in self._poll_task_result(task_id, token_obj.token, is_video, stream, prompt, token_obj.id, use_pending_v1):
+                async for chunk in self._poll_task_result(
+                    task_id,
+                    token_obj.token,
+                    is_video,
+                    stream,
+                    prompt,
+                    token_obj.id,
+                    use_pending_v1,
+                    db_task_id=db_task_id
+                ):
                     yield chunk
                 generation_completed = True
             except GeneratorExit:
@@ -950,6 +972,29 @@ class GenerationHandler:
 
         except GeneratorExit:
             # Re-raise GeneratorExit to allow proper cleanup
+            raise
+        except DeadTokenError as e:
+            # Dead token retry logic is handled by the caller; avoid double release here
+            if token_obj:
+                await self.token_manager.record_error(token_obj.id)
+
+            duration = time.time() - start_time
+            if 'log_id' in dir():
+                await self._log_request_complete(
+                    log_id,
+                    {"error": str(e)},
+                    500,
+                    duration
+                )
+            else:
+                await self._log_request(
+                    token_obj.id if token_obj else None,
+                    f"generate_{model_config['type'] if model_config else 'unknown'}",
+                    {"model": model, "prompt": prompt, "has_image": image is not None},
+                    {"error": str(e)},
+                    500,
+                    duration
+                )
             raise
         except Exception as e:
             # Release lock for image generation on error
@@ -1937,6 +1982,15 @@ class GenerationHandler:
             
             if message_parts:
                 delta["reasoning_content"] = " ".join(message_parts)
+
+        # Attach details to metadata for structured push updates
+        if details:
+            if metadata:
+                metadata = dict(metadata)
+                if "details" not in metadata:
+                    metadata["details"] = details
+            else:
+                metadata = {"details": details}
 
         # Add metadata if provided
         if metadata:
