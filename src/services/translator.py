@@ -11,13 +11,16 @@ TRANSLATION_SYSTEM_PROMPT = """You are a translator for AI video generation prom
 Rules:
 1. First, detect the primary language of the user's prompt (e.g., Chinese, Japanese, Korean, French, Spanish, etc.).
 2. Translate the prompt to English accurately, keeping the same style and meaning.
-3. Since the user wrote their prompt in a specific language, they likely want content in that language in the generated video. Analyze the prompt and:
+3. IMPORTANT: Preserve all @username mentions exactly as they are (e.g., @xiaohanhan123). These are character card references and must NOT be translated, removed, or modified. Keep them in their original position in the prompt.
+4. Since the user wrote their prompt in a specific language, they likely want content in that language in the generated video. Analyze the prompt and:
    - If the prompt involves speech, dialogue, text, subtitles, signs, news, teaching, singing, or any language-sensitive content, add the appropriate language directive (e.g., "in Chinese", "in Japanese", "speaking Korean", "with French text") to preserve the user's language intent.
    - If the prompt is purely visual with no language-sensitive elements (e.g., "a cat sleeping", "sunset over mountains"), do NOT add any language directive.
    - If the user explicitly specifies a different language in their prompt, respect their choice.
-4. Only output the translated prompt, no explanations.
+5. Only output the translated prompt, no explanations.
 
 Examples:
+- "@xiaohanhan123 猫猫装扮" → "@xiaohanhan123 A cat in a costume"
+- "@user123 在说话" → "@user123 talking in Chinese"
 - "一个女孩在说话" (Chinese) → "A girl talking in Chinese"
 - "街道上的广告牌" (Chinese) → "Billboards on the street with Chinese text"
 - "女の子が歌っている" (Japanese) → "A girl singing in Japanese"
@@ -54,6 +57,68 @@ class Translator:
         # - Hebrew
         return bool(re.search(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af\u0400-\u04ff\u0600-\u06ff\u0e00-\u0e7f\u0900-\u097f\u0590-\u05ff]', text))
 
+    def _extract_mentions(self, text: str) -> tuple[list[tuple[int, str]], str]:
+        """Extract @username mentions from text with their positions
+        
+        Args:
+            text: Text that may contain @username mentions
+            
+        Returns:
+            Tuple of (list of (position, mention), text with mentions replaced by placeholders)
+        """
+        # Match @username patterns (alphanumeric and underscores)
+        mention_pattern = r'@[\w]+'
+        mentions = []
+        
+        # Find all mentions with their positions
+        for i, match in enumerate(re.finditer(mention_pattern, text)):
+            mentions.append((i, match.group()))
+        
+        # Replace mentions with placeholders
+        text_with_placeholders = re.sub(mention_pattern, lambda m: f'__MENTION_{len(mentions) - 1}__' if mentions else '', text)
+        
+        # Actually, let's use a simpler approach - replace each mention with indexed placeholder
+        text_with_placeholders = text
+        for i, (_, mention) in enumerate(mentions):
+            text_with_placeholders = text_with_placeholders.replace(mention, f'__MENTION_{i}__', 1)
+        
+        return mentions, text_with_placeholders
+
+    def _restore_mentions(self, mentions: list[tuple[int, str]], translated_text: str) -> str:
+        """Restore @username mentions in translated text
+        
+        If placeholders are found, replace them with original mentions.
+        If placeholders are missing (LLM removed them), prepend all mentions to the text.
+        
+        Args:
+            mentions: List of (position, mention) tuples
+            translated_text: The translated text (may have placeholders or not)
+            
+        Returns:
+            Text with mentions restored
+        """
+        if not mentions:
+            return translated_text
+        
+        result = translated_text
+        missing_mentions = []
+        
+        # Try to restore each mention from its placeholder
+        for i, (_, mention) in enumerate(mentions):
+            placeholder = f'__MENTION_{i}__'
+            if placeholder in result:
+                result = result.replace(placeholder, mention, 1)
+            else:
+                # Placeholder missing - LLM removed it
+                missing_mentions.append(mention)
+        
+        # If any mentions were lost, prepend them to ensure they're not lost
+        if missing_mentions:
+            missing_str = ' '.join(missing_mentions)
+            result = f"{missing_str} {result}"
+        
+        return result
+
     async def translate_to_english(self, text: str) -> str:
         """Translate Chinese text to English, preserving language intent
         
@@ -71,6 +136,13 @@ class Translator:
 
         if not config.translation_api_url or not config.translation_api_key:
             debug_logger.log_info("Translation API not configured, skipping translation")
+            return text
+
+        # Extract @username mentions before translation to guarantee preservation
+        mentions, text_to_translate = self._extract_mentions(text)
+        
+        # If only mentions, no need to translate
+        if not text_to_translate.strip() or not self._needs_translation(text_to_translate):
             return text
 
         try:
@@ -91,7 +163,7 @@ class Translator:
                         },
                         {
                             "role": "user",
-                            "content": text
+                            "content": text_to_translate
                         }
                     ],
                     "temperature": 0.3,
@@ -104,6 +176,8 @@ class Translator:
                 translated = result.get("choices", [{}])[0].get("message", {}).get("content", "")
                 if translated:
                     translated = translated.strip()
+                    # Restore @username mentions - guaranteed not to lose them
+                    translated = self._restore_mentions(mentions, translated)
                     debug_logger.log_info(f"Translated prompt: '{text}' -> '{translated}'")
                     return translated
             else:
