@@ -26,7 +26,7 @@ Examples:
 - "Une fille parle" (French) → "A girl talking in French"
 - "一只猫在睡觉" (Chinese) → "A cat sleeping"
 - "美しい夕日" (Japanese) → "A beautiful sunset"
-- "一个人在说英语" (Chinese) → "A person speaking English""""
+- "一个人在说英语" (Chinese) -> A person speaking English"""
 
 
 class Translator:
