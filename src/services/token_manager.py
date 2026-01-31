@@ -257,7 +257,9 @@ class TokenManager:
                 "Authorization": f"Bearer {access_token}",
                 "Accept": "application/json",
                 "Origin": "https://sora.chatgpt.com",
-                "Referer": "https://sora.chatgpt.com/"
+                "Referer": "https://sora.chatgpt.com/",
+                "oai-package-name": "com.openai.sora",
+                "oai-client-type": "android",
             }
 
             response = await self._make_sora_request(
@@ -300,7 +302,9 @@ class TokenManager:
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
             "Origin": "https://sora.chatgpt.com",
-            "Referer": "https://sora.chatgpt.com/"
+            "Referer": "https://sora.chatgpt.com/",
+            "oai-package-name": "com.openai.sora",
+            "oai-client-type": "android",
         }
 
         async with AsyncSession() as session:
@@ -359,7 +363,9 @@ class TokenManager:
                 "Authorization": f"Bearer {access_token}",
                 "Accept": "application/json",
                 "Origin": "https://sora.chatgpt.com",
-                "Referer": "https://sora.chatgpt.com/"
+                "Referer": "https://sora.chatgpt.com/",
+                "oai-package-name": "com.openai.sora",
+                "oai-client-type": "android",
             }
 
             response = await self._make_sora_request(
@@ -462,7 +468,9 @@ class TokenManager:
                 "Authorization": f"Bearer {access_token}",
                 "Accept": "application/json",
                 "Origin": "https://sora.chatgpt.com",
-                "Referer": "https://sora.chatgpt.com/"
+                "Referer": "https://sora.chatgpt.com/",
+                "oai-package-name": "com.openai.sora",
+                "oai-client-type": "android",
             }
 
             response = await self._make_sora_request(
@@ -512,7 +520,9 @@ class TokenManager:
                 "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json",
                 "Origin": "https://sora.chatgpt.com",
-                "Referer": "https://sora.chatgpt.com/"
+                "Referer": "https://sora.chatgpt.com/",
+                "oai-package-name": "com.openai.sora",
+                "oai-client-type": "android",
             }
 
             response = await self._make_sora_request(
@@ -553,7 +563,9 @@ class TokenManager:
                 "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json",
                 "Origin": "https://sora.chatgpt.com",
-                "Referer": "https://sora.chatgpt.com/"
+                "Referer": "https://sora.chatgpt.com/",
+                "oai-package-name": "com.openai.sora",
+                "oai-client-type": "android",
             }
 
             response = await self._make_sora_request(
@@ -591,7 +603,9 @@ class TokenManager:
                 "Cookie": f"oai-did={device_id}",
                 "Content-Type": "application/json",
                 "Origin": "https://sora.chatgpt.com",
-                "Referer": "https://sora.chatgpt.com/"
+                "Referer": "https://sora.chatgpt.com/",
+                "oai-package-name": "com.openai.sora",
+                "oai-client-type": "android",
             }
 
             print(f"🆔 设备ID: {device_id}")

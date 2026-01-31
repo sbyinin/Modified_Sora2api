@@ -870,6 +870,8 @@ class SoraClient:
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
+            "oai-package-name": "com.openai.sora",
+            "oai-client-type": "android",
         }
 
         session, _ = await self._get_session(token)
@@ -1265,6 +1267,8 @@ class SoraClient:
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-origin",
+            "oai-package-name": "com.openai.sora",
+            "oai-client-type": "android",
         }
 
         session, _ = await self._get_session(token)

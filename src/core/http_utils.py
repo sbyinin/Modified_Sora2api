@@ -11,17 +11,21 @@ MOBILE_FINGERPRINTS = [
     "safari18_0_ios",
 ]
 
-# Sora Web UA (PC Chrome)
-SORA_APP_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+# iOS Safari UA 列表
+IOS_USER_AGENTS = [
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
+]
+
+# Sora App UA (iOS Safari)
+SORA_APP_USER_AGENT = IOS_USER_AGENTS[0]
 
 # Sora App 标识头
 SORA_APP_PACKAGE_NAME = "com.openai.sora"
 SORA_APP_CLIENT_TYPE = "android"
 
 # 手机 UA 列表 (Sora App)
-MOBILE_USER_AGENTS = [
-    SORA_APP_USER_AGENT,
-]
+MOBILE_USER_AGENTS = IOS_USER_AGENTS
 
 # Sora App 请求头模板
 CHROME_HEADERS = {

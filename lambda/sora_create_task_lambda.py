@@ -23,7 +23,8 @@ import urllib.request
 import urllib.error
 from datetime import datetime, timedelta, timezone
 
-SORA_APP_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+# iOS Safari UA
+SORA_APP_USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
 
 POW_MAX_ITERATION = 500000
 POW_CORES = [8, 16, 24, 32]
@@ -344,7 +345,7 @@ def fetch_oai_did():
     headers = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "User-Agent": SORA_APP_USER_AGENT,
     }
     
     try:
