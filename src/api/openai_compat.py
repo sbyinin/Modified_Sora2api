@@ -409,7 +409,7 @@ async def create_chat_completion(
         )
 
 
-def _strip_markdown_wrapped_paren
+def _strip_markdown_wrapped_paren(url: str, content: str, start_index: int) -> str:
     """Remove trailing ')' from Markdown-wrapped URLs like (...)."""
     if url.endswith(")") and start_index > 0 and content[start_index - 1] == "(":
         return url[:-1]
@@ -1018,7 +1018,7 @@ async def _poll_lambda_task_result(task_id: str, token_obj, prompt: str,
     
     The original task_id returned to user remains unchanged.
     """
-    from ..services.generation_handler import DeadTokenError, get_dead_token_config
+    from ..services.generation_handler import DeadTokenError, InvalidTokenError, get_dead_token_config
     from ..services.lambda_manager import lambda_manager
     from ..core.database import Database
     
@@ -1130,6 +1130,75 @@ async def _poll_lambda_task_result(task_id: str, token_obj, prompt: str,
             except Exception as retry_error:
                 print(f"[Lambda] Failed to retry: {retry_error}")
                 raise
+        
+        except InvalidTokenError as e:
+            print(f"[Lambda] Invalid token (auth error) on attempt {retry_attempt + 1}/{max_retries}: token_id={e.token_id}")
+            
+            # Disable the invalid token
+            await generation_handler.token_manager.disable_token(e.token_id)
+            disabled_token_ids.add(e.token_id)
+            print(f"[Lambda] Auto-disabled invalid token {e.token_id}")
+            
+            # Release concurrency slot for invalid token
+            if generation_handler.concurrency_manager:
+                await generation_handler.concurrency_manager.release_video(e.token_id)
+            
+            if retry_attempt >= max_retries - 1:
+                # No more retries
+                raise Exception(
+                    f"Generation failed after {max_retries} attempts due to invalid tokens. "
+                    f"Last error: {str(e)}"
+                )
+            
+            # Try to acquire a new token and re-submit
+            try:
+                print(f"[Lambda] Acquiring new token for retry (after auth error)...")
+                current_token_obj = await generation_handler._acquire_token_for_generation(
+                    is_image=False,
+                    is_video=True,
+                    excluded_token_ids=disabled_token_ids
+                )
+                print(f"[Lambda] Got new token {current_token_obj.id}")
+                
+                # Re-upload image if needed
+                if payload and image_data:
+                    print(f"[Lambda] Re-uploading image with new token...")
+                    image_bytes = generation_handler._decode_base64_image(image_data)
+                    media_id = await generation_handler.sora_client.upload_image(image_bytes, current_token_obj.token)
+                    if media_id:
+                        payload["inpaint_items"] = [{"kind": "upload", "upload_id": media_id}]
+                
+                # Re-submit task with new token
+                if payload:
+                    print(f"[Lambda] Re-submitting task with new token...")
+                    try:
+                        current_task_id = await lambda_manager.create_task(
+                            token=current_token_obj.token,
+                            payload=payload
+                        )
+                        print(f"[Lambda] New task_id: {current_task_id}")
+                    except Exception as create_error:
+                        print(f"[Lambda] Failed to create task with token {current_token_obj.id}: {create_error}")
+                        if generation_handler.concurrency_manager:
+                            await generation_handler.concurrency_manager.release_video(current_token_obj.id)
+                        disabled_token_ids.add(current_token_obj.id)
+                        continue
+                    
+                    await db.update_task(
+                        task_id,
+                        "processing",
+                        0.0,
+                        error_message=None
+                    )
+                else:
+                    raise Exception("Cannot retry: no payload available for re-submission")
+                    
+                await asyncio.sleep(0.5)
+                continue
+                
+            except Exception as retry_error:
+                print(f"[Lambda] Failed to retry after auth error: {retry_error}")
+                raise
                 
         except Exception as e:
             # Non-dead-token error
@@ -1164,7 +1233,7 @@ async def _lambda_video_generation_stream(prompt: str, image_data: Optional[str]
                                           model_id: str, model_config: dict):
     """Generate video using Lambda with URL polling and dead token retry support"""
     from ..services.lambda_manager import lambda_manager
-    from ..services.generation_handler import DeadTokenError, get_dead_token_config
+    from ..services.generation_handler import DeadTokenError, InvalidTokenError, get_dead_token_config
     
     dead_token_config = get_dead_token_config()
     max_retries = dead_token_config.max_retries if dead_token_config.enabled else 1
@@ -1338,6 +1407,43 @@ async def _lambda_video_generation_stream(prompt: str, image_data: Optional[str]
             
             # Small delay before retry
             await asyncio.sleep(1.0)
+            continue
+        
+        except InvalidTokenError as e:
+            print(f"[Lambda Stream] Invalid token (auth error) on attempt {retry_attempt + 1}/{max_retries}: token_id={e.token_id}")
+            
+            # Disable the invalid token
+            await generation_handler.token_manager.disable_token(e.token_id)
+            disabled_token_ids.add(e.token_id)
+            print(f"[Lambda Stream] Auto-disabled invalid token {e.token_id}")
+            
+            # Release concurrency slot for invalid token
+            if generation_handler.concurrency_manager:
+                await generation_handler.concurrency_manager.release_video(e.token_id)
+            
+            # Notify user
+            yield generation_handler._format_stream_chunk(
+                reasoning_content=f"Token authentication failed (401). Token has been disabled. {'Retrying with a different token...' if retry_attempt < max_retries - 1 else 'No more retries available.'}",
+                stage="invalid_token",
+                status="detected",
+                details={"token_id": e.token_id, "retry_attempt": retry_attempt + 1, "max_retries": max_retries}
+            )
+            
+            if retry_attempt >= max_retries - 1:
+                # No more retries - update DB and raise
+                error_msg = f"Generation failed after {max_retries} attempts due to invalid tokens. Last error: {str(e)}"
+                if db_task_id:
+                    await generation_handler.db.update_task(db_task_id, "failed", 0, error_message=error_msg)
+                    await generation_handler.db.update_request_log_by_task_id(
+                        db_task_id,
+                        response_body=json.dumps(build_error_detail(Exception(error_msg), source_hint="auth_error"), ensure_ascii=False),
+                        status_code=401,
+                        duration=time.time() - start_time
+                    )
+                raise Exception(error_msg)
+            
+            # Small delay before retry
+            await asyncio.sleep(0.5)
             continue
             
         except (asyncio.CancelledError, GeneratorExit):

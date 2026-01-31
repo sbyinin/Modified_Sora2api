@@ -2013,7 +2013,26 @@ class GenerationHandler:
             except DeadTokenError:
                 # Re-raise DeadTokenError to allow retry logic in caller
                 raise
+            except InvalidTokenError:
+                # Re-raise InvalidTokenError to allow retry logic in caller
+                raise
             except Exception as e:
+                # Check if this is a 401 auth error that should trigger token retry
+                error_str = str(e).lower()
+                is_auth_error = (
+                    "401" in error_str or
+                    "authentication" in error_str or
+                    "invalidated" in error_str or
+                    "unauthorized" in error_str or
+                    "signing in again" in error_str or
+                    "token has been invalidated" in error_str
+                )
+                
+                if is_auth_error and token_id:
+                    # Convert to InvalidTokenError for retry logic
+                    debug_logger.log_info(f"Auth error detected during polling for task {task_id}: {str(e)}, raising InvalidTokenError")
+                    raise InvalidTokenError(token_id, str(e))
+                
                 # Log the error but continue polling (timeout check at loop start will handle termination)
                 debug_logger.log_info(f"Polling error for task {task_id}: {str(e)}, continuing...")
                 continue
