@@ -1,8 +1,11 @@
 """Admin routes - Management endpoints"""
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends, Header, Request
+from fastapi.responses import StreamingResponse
 from typing import List, Optional
 from datetime import datetime
 import secrets
+import asyncio
+import json
 from pydantic import BaseModel
 from ..core.auth import AuthManager
 from ..core.config import config
@@ -143,6 +146,9 @@ class UpdateTokenRequest(BaseModel):
     image_concurrency: Optional[int] = None  # Image concurrency limit
     video_concurrency: Optional[int] = None  # Video concurrency limit
 
+class TokenLookupRequest(BaseModel):
+    token: str
+
 class ImportTokenItem(BaseModel):
     email: str  # Email (primary key)
     access_token: str  # Access Token (AT)
@@ -251,7 +257,7 @@ async def logout(token: str = Depends(verify_admin_token)):
 
 # Token management endpoints
 @router.get("/api/tokens")
-async def get_tokens(token: str = Depends(verify_admin_token)) -> List[dict]:
+async def get_tokens(include_secrets: bool = False, token: str = Depends(verify_admin_token)) -> List[dict]:
     """Get all tokens with statistics"""
     tokens = await token_manager.get_all_tokens()
 
@@ -262,13 +268,9 @@ async def get_tokens(token: str = Depends(verify_admin_token)) -> List[dict]:
 
     for token in tokens:
         stats = all_stats.get(token.id)
-        result.append({
+        token_data = {
             "id": token.id,
-            "token": token.token,  # 完整的Access Token
-            "st": token.st,  # 完整的Session Token
-            "rt": token.rt,  # 完整的Refresh Token
             "client_id": token.client_id,  # Client ID
-            "proxy_url": token.proxy_url,  # Proxy URL
             "email": token.email,
             "name": token.name,
             "remark": token.remark,
@@ -300,9 +302,90 @@ async def get_tokens(token: str = Depends(verify_admin_token)) -> List[dict]:
             # 并发限制
             "image_concurrency": token.image_concurrency,
             "video_concurrency": token.video_concurrency
-        })
+        }
+        if include_secrets:
+            token_data.update({
+                "token": token.token,  # 完整的Access Token
+                "st": token.st,  # 完整的Session Token
+                "rt": token.rt,  # 完整的Refresh Token
+                "proxy_url": token.proxy_url  # Proxy URL
+            })
+        result.append(token_data)
 
     return result
+
+@router.post("/api/tokens/lookup")
+async def lookup_token(request: TokenLookupRequest, token: str = Depends(verify_admin_token)) -> dict:
+    """Lookup token id by access token value"""
+    try:
+        token_obj = await db.get_token_by_value(request.token)
+        if not token_obj:
+            raise HTTPException(status_code=404, detail="Token not found")
+        return {
+            "success": True,
+            "token_id": token_obj.id,
+            "email": token_obj.email
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to lookup token: {str(e)}")
+
+@router.get("/api/tokens/{token_id}")
+async def get_token_detail(
+    token_id: int,
+    include_secrets: bool = True,
+    token: str = Depends(verify_admin_token)
+) -> dict:
+    """Get a single token with statistics"""
+    token_obj = await db.get_token(token_id)
+    if not token_obj:
+        raise HTTPException(status_code=404, detail="Token not found")
+
+    stats = await db.get_token_stats(token_id)
+    token_data = {
+        "id": token_obj.id,
+        "client_id": token_obj.client_id,  # Client ID
+        "email": token_obj.email,
+        "name": token_obj.name,
+        "remark": token_obj.remark,
+        "expiry_time": token_obj.expiry_time.isoformat() if token_obj.expiry_time else None,
+        "is_active": token_obj.is_active,
+        "cooled_until": token_obj.cooled_until.isoformat() if token_obj.cooled_until else None,
+        "created_at": token_obj.created_at.isoformat() if token_obj.created_at else None,
+        "last_used_at": token_obj.last_used_at.isoformat() if token_obj.last_used_at else None,
+        "use_count": token_obj.use_count,
+        "image_count": stats.image_count if stats else 0,
+        "video_count": stats.video_count if stats else 0,
+        "error_count": stats.error_count if stats else 0,
+        # 订阅信息
+        "plan_type": token_obj.plan_type,
+        "plan_title": token_obj.plan_title,
+        "subscription_end": token_obj.subscription_end.isoformat() if token_obj.subscription_end else None,
+        # Sora2信息
+        "sora2_supported": token_obj.sora2_supported,
+        "sora2_invite_code": token_obj.sora2_invite_code,
+        "sora2_redeemed_count": token_obj.sora2_redeemed_count,
+        "sora2_total_count": token_obj.sora2_total_count,
+        "sora2_remaining_count": token_obj.sora2_remaining_count,
+        "sora2_cooldown_until": token_obj.sora2_cooldown_until.isoformat() if token_obj.sora2_cooldown_until else None,
+        # 计算重置积分倒计时（秒）
+        "access_resets_in_seconds": int((token_obj.sora2_cooldown_until - datetime.now()).total_seconds()) if token_obj.sora2_cooldown_until and token_obj.sora2_cooldown_until > datetime.now() else 0,
+        # 功能开关
+        "image_enabled": token_obj.image_enabled,
+        "video_enabled": token_obj.video_enabled,
+        # 并发限制
+        "image_concurrency": token_obj.image_concurrency,
+        "video_concurrency": token_obj.video_concurrency
+    }
+    if include_secrets:
+        token_data.update({
+            "token": token_obj.token,  # 完整的Access Token
+            "st": token_obj.st,  # 完整的Session Token
+            "rt": token_obj.rt,  # 完整的Refresh Token
+            "proxy_url": token_obj.proxy_url  # Proxy URL
+        })
+    return token_data
 
 @router.post("/api/tokens")
 async def add_token(request: AddTokenRequest, token: str = Depends(verify_admin_token)):

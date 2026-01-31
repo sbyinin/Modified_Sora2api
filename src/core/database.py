@@ -2110,6 +2110,34 @@ class Database:
             """, (limit,))
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
+
+    async def get_request_log(self, log_id: int) -> Optional[dict]:
+        """Get a single request log with token email and task progress."""
+        async with self._connect(readonly=True) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("""
+                SELECT
+                    rl.id,
+                    rl.token_id,
+                    rl.task_id,
+                    rl.operation,
+                    rl.request_body,
+                    rl.response_body,
+                    rl.status_code,
+                    rl.duration,
+                    rl.created_at,
+                    t.email as token_email,
+                    t.username as token_username,
+                    tk.progress as task_progress,
+                    tk.status as task_status
+                FROM request_logs rl
+                LEFT JOIN tokens t ON rl.token_id = t.id
+                LEFT JOIN tasks tk ON rl.task_id = tk.task_id
+                WHERE rl.id = ?
+                LIMIT 1
+            """, (log_id,))
+            row = await cursor.fetchone()
+            return dict(row) if row else None
     
     # Admin config operations
     async def get_admin_config(self) -> AdminConfig:

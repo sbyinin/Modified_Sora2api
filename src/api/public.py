@@ -65,7 +65,8 @@ async def get_public_stats(api_key: str = Depends(verify_api_key_header)):
             }
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get stats: {str(e)}")
+        from ..core.error_utils import filter_error_message
+        raise HTTPException(status_code=500, detail=filter_error_message(e, error_type='api'))
 
 
 @router.get("/v1/invite-codes")
@@ -110,7 +111,8 @@ async def get_random_invite_code(api_key: str = Depends(verify_api_key_header)):
             "email": selected["email"]
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get invite code: {str(e)}")
+        from ..core.error_utils import filter_error_message
+        raise HTTPException(status_code=500, detail=filter_error_message(e, error_type='api'))
 
 
 # ============================================================
@@ -171,8 +173,8 @@ async def enhance_prompt(
     except HTTPException:
         raise
     except Exception as e:
-        error_message = str(e) or "Failed to enhance prompt"
-        raise HTTPException(status_code=500, detail=error_message)
+        from ..core.error_utils import filter_error_message
+        raise HTTPException(status_code=500, detail=filter_error_message(e, error_type='api'))
 
 @router.get("/v1/profiles/{username}")
 async def get_user_profile(
@@ -212,7 +214,8 @@ async def get_user_profile(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get user profile: {str(e)}")
+        from ..core.error_utils import filter_error_message
+        raise HTTPException(status_code=500, detail=filter_error_message(e, error_type='api'))
 
 
 @router.get("/v1/users/{user_id}/feed")
@@ -258,7 +261,8 @@ async def get_user_feed(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get user feed: {str(e)}")
+        from ..core.error_utils import filter_error_message
+        raise HTTPException(status_code=500, detail=filter_error_message(e, error_type='api'))
 
 
 @router.get("/v1/characters/search")
@@ -342,7 +346,8 @@ async def search_characters(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to search characters: {str(e)}")
+        from ..core.error_utils import filter_error_message
+        raise HTTPException(status_code=500, detail=filter_error_message(e, error_type='api'))
 
 
 @router.get("/v1/feed")
@@ -429,7 +434,8 @@ async def get_public_feed(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get public feed: {str(e)}")
+        from ..core.error_utils import filter_error_message
+        raise HTTPException(status_code=500, detail=filter_error_message(e, error_type='api'))
 
 
 @router.get("/v1/tokens/{token_id}/profile-feed")
@@ -456,7 +462,8 @@ async def get_token_profile_feed(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get profile feed: {str(e)}")
+        from ..core.error_utils import filter_error_message
+        raise HTTPException(status_code=500, detail=filter_error_message(e, error_type='api'))
 
 
 @router.get("/v1/tokens/{token_id}/pending-tasks")
@@ -488,7 +495,8 @@ async def get_token_pending_tasks(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get pending tasks: {str(e)}")
+        from ..core.error_utils import filter_error_message
+        raise HTTPException(status_code=500, detail=filter_error_message(e, error_type='api'))
 
 
 @router.get("/v1/tokens/{token_id}/pending-tasks-v2")
@@ -520,7 +528,8 @@ async def get_token_pending_tasks_v2(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get pending tasks v2: {str(e)}")
+        from ..core.error_utils import filter_error_message
+        raise HTTPException(status_code=500, detail=filter_error_message(e, error_type='api'))
 
 
 @router.get("/v1/test/tokens/{token_id}/pending-tasks")
@@ -552,7 +561,8 @@ async def test_get_token_pending_tasks(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get pending tasks: {str(e)}")
+        from ..core.error_utils import filter_error_message
+        raise HTTPException(status_code=500, detail=filter_error_message(e, error_type='api'))
 
 
 @router.get("/v1/test/tokens/{token_id}/pending-tasks-v2")
@@ -584,7 +594,8 @@ async def test_get_token_pending_tasks_v2(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get pending tasks v2: {str(e)}")
+        from ..core.error_utils import filter_error_message
+        raise HTTPException(status_code=500, detail=filter_error_message(e, error_type='api'))
 
 
 @router.get("/v1/tokens/{token_id}/tasks/{task_id}")
@@ -670,7 +681,8 @@ async def get_task_progress(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get task progress: {str(e)}")
+        from ..core.error_utils import filter_error_message
+        raise HTTPException(status_code=500, detail=filter_error_message(e, error_type='api'))
 
 
 
@@ -716,7 +728,8 @@ async def get_sora_link(request: GetSoraLinkRequest):
         else:
             return {"error": result["error"]}
     except Exception as e:
-        return {"error": f"服务异常: {str(e)}"}
+        from ..core.error_utils import filter_error_message
+        return {"error": filter_error_message(e, error_type='api')}
 
 
 @router.post("/v1/watermark/remove")

@@ -22,6 +22,7 @@ from ..core.auth import verify_api_key_header
 from ..services.generation_handler import GenerationHandler, MODEL_CONFIG
 from ..core.config import config
 from ..core.models import CharacterOptions, ChatCompletionRequest
+from ..core.error_utils import build_error_detail
 
 router = APIRouter()
 
@@ -318,7 +319,8 @@ async def create_chat_completion(
                     raise
                 except Exception as e:
                     has_error = True
-                    error_message = str(e)
+                    from ..core.error_utils import filter_error_message
+                    error_message = filter_error_message(e, error_type='video')
                     import traceback
                     traceback.print_exc()
                 finally:
@@ -391,12 +393,14 @@ async def create_chat_completion(
     except HTTPException:
         raise
     except Exception as e:
-        # Return OpenAI-compatible error format
+        # Return OpenAI-compatible error format with filtered message
+        from ..core.error_utils import filter_error_message
+        user_message = filter_error_message(e, error_type='video')
         return JSONResponse(
             status_code=500,
             content={
                 "error": {
-                    "message": str(e),
+                    "message": user_message,
                     "type": "server_error",
                     "param": None,
                     "code": None
@@ -405,7 +409,7 @@ async def create_chat_completion(
         )
 
 
-def _strip_markdown_wrapped_paren(url: str, content: str, start_index: int) -> str:
+def _strip_markdown_wrapped_paren
     """Remove trailing ')' from Markdown-wrapped URLs like (...)."""
     if url.endswith(")") and start_index > 0 and content[start_index - 1] == "(":
         return url[:-1]
@@ -777,14 +781,17 @@ async def _process_video_generation_v2(video_id: str):
                         delta = choices[0].get("delta", {})
                         reasoning = delta.get("reasoning_content", "")
                         if isinstance(reasoning, str):
-                            match = re.search(r'(\d+)%', reasoning)
+                            # Only match progress patterns like "progress: 50%" or "50%"
+                            match = re.search(r'(?:progress[:\s]*)?([1-9]?\d|100)%', reasoning, re.IGNORECASE)
                             if match:
                                 progress = int(match.group(1))
                 if progress is None:
-                    match = re.search(r'(\d+)%', chunk)
+                    # Only match valid progress values (0-100)
+                    match = re.search(r'(?:progress[:\s]*)?([1-9]?\d|100)%', chunk, re.IGNORECASE)
                     if match:
                         progress = int(match.group(1))
-                if progress is not None:
+                # Validate progress is in valid range (0-100)
+                if progress is not None and 0 <= progress <= 100:
                     task_info["progress"] = progress
                     _touch_video_task(task_info)
                 
@@ -936,12 +943,18 @@ async def _process_video_generation_v2(video_id: str):
         import traceback
         traceback.print_exc()
         task_info["status"] = "failed"
+        
+        # 过滤内部错误，不暴露给用户
+        from ..core.error_utils import filter_error_message, get_safe_error_response
+        user_message = filter_error_message(e, error_type='video')
+        
         task_info["error"] = {
-            "message": str(e),
+            "message": user_message,
             "code": "generation_failed"
         }
         _touch_video_task(task_info)
         try:
+            # 数据库中保存完整错误信息用于调试
             await db.update_task(video_id, "failed", 0.0, error_message=str(e))
         except Exception:
             pass
@@ -1125,14 +1138,14 @@ async def _poll_lambda_task_result(task_id: str, token_obj, prompt: str,
                 if log_id is not None:
                     await generation_handler.db.update_request_log(
                         log_id,
-                        response_body=json.dumps({"error": str(e)}),
+                        response_body=json.dumps(build_error_detail(e), ensure_ascii=False),
                         status_code=500,
                         duration=duration
                     )
                 else:
                     await generation_handler.db.update_request_log_by_task_id(
                         task_id,
-                        response_body=json.dumps({"error": str(e)}),
+                        response_body=json.dumps(build_error_detail(e), ensure_ascii=False),
                         status_code=500,
                         duration=duration
                     )
@@ -1317,7 +1330,7 @@ async def _lambda_video_generation_stream(prompt: str, image_data: Optional[str]
                     await generation_handler.db.update_task(db_task_id, "failed", 0, error_message=error_msg)
                     await generation_handler.db.update_request_log_by_task_id(
                         db_task_id,
-                        response_body=json.dumps({"error": error_msg}),
+                        response_body=json.dumps(build_error_detail(Exception(error_msg), source_hint="dead_token"), ensure_ascii=False),
                         status_code=500,
                         duration=time.time() - start_time
                     )
@@ -1343,14 +1356,14 @@ async def _lambda_video_generation_stream(prompt: str, image_data: Optional[str]
                 await generation_handler.db.update_task(db_task_id, "failed", 0, error_message=str(e))
                 await generation_handler.db.update_request_log_by_task_id(
                     db_task_id,
-                    response_body=json.dumps({"error": str(e)}),
+                    response_body=json.dumps(build_error_detail(e), ensure_ascii=False),
                     status_code=500,
                     duration=duration
                 )
             elif log_id:
                 await generation_handler._log_request_complete(
                     log_id,
-                    {"error": str(e)},
+                    build_error_detail(e),
                     500,
                     duration
                 )
@@ -1595,7 +1608,8 @@ async def create_video(
                 except Exception as e:
                     if token_obj and generation_handler.concurrency_manager:
                         await generation_handler.concurrency_manager.release_video(token_obj.id)
-                    raise HTTPException(status_code=500, detail=f"Lambda create failed: {str(e)}")
+                    from ..core.error_utils import filter_error_message
+                    raise HTTPException(status_code=500, detail=filter_error_message(e, error_type='video'))
         
         # Generate task ID (new-api-main compatible format)
         video_id = f"{model}-{uuid.uuid4().hex[:12]}"
@@ -1706,11 +1720,15 @@ async def create_video(
     except HTTPException:
         raise
     except Exception as e:
+        # 过滤内部错误，不暴露给用户
+        from ..core.error_utils import filter_error_message
+        user_message = filter_error_message(e, error_type='video')
+        
         return JSONResponse(
             status_code=500,
             content={
                 "error": {
-                    "message": str(e),
+                    "message": user_message,
                     "code": "server_error"
                 }
             }
@@ -2125,11 +2143,12 @@ async def remix_video(
     except HTTPException:
         raise
     except Exception as e:
+        from ..core.error_utils import filter_error_message
         return JSONResponse(
             status_code=500,
             content={
                 "error": {
-                    "message": str(e),
+                    "message": filter_error_message(e, error_type='video'),
                     "code": "server_error"
                 }
             }
@@ -2235,7 +2254,8 @@ async def test_create_video(
     except HTTPException:
         raise
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": {"message": str(e), "type": "server_error", "param": None, "code": None}})
+        from ..core.error_utils import filter_error_message
+        return JSONResponse(status_code=500, content={"error": {"message": filter_error_message(e, error_type='video'), "type": "server_error", "param": None, "code": None}})
 
 
 # ============================================================
@@ -2319,7 +2339,8 @@ async def create_character_from_generation(
     except HTTPException:
         raise
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": {"message": str(e), "type": "server_error", "param": None, "code": None}})
+        from ..core.error_utils import filter_error_message
+        return JSONResponse(status_code=500, content={"error": {"message": filter_error_message(e, error_type='video'), "type": "server_error", "param": None, "code": None}})
 
 # ============================================================
 # /v1/images/generations - Image Generation
@@ -2456,7 +2477,8 @@ async def create_image(
     except HTTPException:
         raise
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": {"message": str(e), "type": "server_error", "param": None, "code": None}})
+        from ..core.error_utils import filter_error_message
+        return JSONResponse(status_code=500, content={"error": {"message": filter_error_message(e, error_type='image'), "type": "server_error", "param": None, "code": None}})
 
 
 # ============================================================
@@ -2667,4 +2689,5 @@ async def create_character(
     except HTTPException:
         raise
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": {"message": str(e), "type": "server_error", "param": None, "code": None}})
+        from ..core.error_utils import filter_error_message
+        return JSONResponse(status_code=500, content={"error": {"message": filter_error_message(e, error_type='video'), "type": "server_error", "param": None, "code": None}})

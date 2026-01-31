@@ -20,6 +20,7 @@ from ..core.config import config
 from ..core.logger import debug_logger
 from ..core.http_utils import get_random_fingerprint
 from ..core.redis_manager import get_redis_manager
+from ..core.error_utils import build_error_detail
 
 
 class DeadTokenError(Exception):
@@ -979,10 +980,11 @@ class GenerationHandler:
                 await self.token_manager.record_error(token_obj.id)
 
             duration = time.time() - start_time
+            error_detail = build_error_detail(e, source_hint="dead_token")
             if 'log_id' in dir():
                 await self._log_request_complete(
                     log_id,
-                    {"error": str(e)},
+                    error_detail,
                     500,
                     duration
                 )
@@ -991,7 +993,7 @@ class GenerationHandler:
                     token_obj.id if token_obj else None,
                     f"generate_{model_config['type'] if model_config else 'unknown'}",
                     {"model": model, "prompt": prompt, "has_image": image is not None},
-                    {"error": str(e)},
+                    error_detail,
                     500,
                     duration
                 )
@@ -1014,6 +1016,7 @@ class GenerationHandler:
 
             # Update log with failure
             duration = time.time() - start_time
+            error_detail = build_error_detail(e)
             if 'log_id' in dir():
                 await self._log_request_complete(
                     log_id,
@@ -1027,7 +1030,7 @@ class GenerationHandler:
                     token_obj.id if token_obj else None,
                     f"generate_{model_config['type'] if model_config else 'unknown'}",
                     {"model": model, "prompt": prompt, "has_image": image is not None},
-                    {"error": str(e)},
+                    error_detail,
                     500,
                     duration
                 )
@@ -1135,9 +1138,13 @@ class GenerationHandler:
                     )
                 await self.db.update_request_log_by_task_id(
                     db_task_id,
-                    response_body=json.dumps({
-                        "error": f"Generation timeout after {elapsed_time:.1f} seconds"
-                    }),
+                    response_body=json.dumps(
+                        build_error_detail(
+                            Exception(f"Generation timeout after {elapsed_time:.1f} seconds"),
+                            source_hint="timeout"
+                        ),
+                        ensure_ascii=False
+                    ),
                     status_code=408,
                     duration=elapsed_time
                 )
@@ -1185,7 +1192,10 @@ class GenerationHandler:
                                 await self.db.update_task(db_task_id, "failed", progress_pct, error_message=error_msg)
                                 await self.db.update_request_log_by_task_id(
                                     db_task_id,
-                                    response_body=json.dumps({"error": error_msg}),
+                                    response_body=json.dumps(
+                                        build_error_detail(Exception(error_msg), source_hint="upstream"),
+                                        ensure_ascii=False
+                                    ),
                                     status_code=500,
                                     duration=time.time() - start_time
                                 )
@@ -1211,6 +1221,13 @@ class GenerationHandler:
                             if abs(progress_pct - last_db_progress) >= db_update_threshold:
                                 try:
                                     await self.db.update_task(db_task_id, "processing", progress_pct)
+                                    await self._log_request_progress(
+                                        db_task_id,
+                                        progress_pct,
+                                        status,
+                                        snapshot=task,
+                                        stage="pending_v1" if use_pending_v1 else "pending_v2"
+                                    )
                                     last_db_progress = progress_pct
                                 except Exception as update_error:
                                     debug_logger.log_info(
@@ -1382,9 +1399,11 @@ class GenerationHandler:
                                         debug_logger.log_info(
                                             f"Failed to cache failed task for {db_task_id}: {cache_error}"
                                         )
+                                    error_detail = build_error_detail(Exception(error_message), source_hint="upstream")
+                                    error_detail["error_category"] = "content_policy"
                                     await self.db.update_request_log_by_task_id(
                                         db_task_id,
-                                        response_body=json.dumps({"error": error_message}),
+                                        response_body=json.dumps(error_detail, ensure_ascii=False),
                                         status_code=400,
                                         duration=time.time() - start_time
                                     )
@@ -1419,10 +1438,17 @@ class GenerationHandler:
                                     debug_logger.log_info(
                                         f"Draft found for task {task_id} but video URL not ready yet (count={draft_url_missing_count}); continuing polling"
                                     )
-                                    if stream:
-                                        current_time = time.time()
-                                        if current_time - draft_pending_last_emit >= draft_pending_emit_interval:
-                                            draft_pending_last_emit = current_time
+                                    current_time = time.time()
+                                    if current_time - draft_pending_last_emit >= draft_pending_emit_interval:
+                                        draft_pending_last_emit = current_time
+                                        await self._log_request_progress(
+                                            db_task_id,
+                                            last_progress,
+                                            "processing",
+                                            snapshot=item,
+                                            stage="draft_pending"
+                                        )
+                                        if stream:
                                             yield self._format_stream_chunk(
                                                 reasoning_content="Draft found, video file is still being prepared...",
                                                 stage="generation",
@@ -1839,7 +1865,10 @@ class GenerationHandler:
                                 await self.db.update_task(db_task_id, "failed", progress, error_message=error_msg)
                                 await self.db.update_request_log_by_task_id(
                                     db_task_id,
-                                    response_body=json.dumps({"error": error_msg}),
+                                    response_body=json.dumps(
+                                        build_error_detail(Exception(error_msg), source_hint="upstream"),
+                                        ensure_ascii=False
+                                    ),
                                     status_code=500,
                                     duration=time.time() - start_time
                                 )
@@ -1850,6 +1879,13 @@ class GenerationHandler:
                                 if progress > last_progress + 20:  # Update every 20%
                                     last_progress = progress
                                     await self.db.update_task(db_task_id, "processing", progress)
+                                    await self._log_request_progress(
+                                        db_task_id,
+                                        progress,
+                                        "processing",
+                                        snapshot=task_resp,
+                                        stage="image_tasks"
+                                    )
 
                                     if stream:
                                         yield self._format_stream_chunk(
@@ -1927,9 +1963,10 @@ class GenerationHandler:
             )
         await self.db.update_request_log_by_task_id(
             db_task_id,
-            response_body=json.dumps({
-                "error": f"Generation timeout after {timeout} seconds"
-            }),
+            response_body=json.dumps(
+                build_error_detail(Exception(f"Generation timeout after {timeout} seconds"), source_hint="timeout"),
+                ensure_ascii=False
+            ),
             status_code=408,
             duration=time.time() - start_time
         )
@@ -2170,6 +2207,26 @@ class GenerationHandler:
         except Exception as e:
             # Don't fail the request if logging fails
             print(f"Failed to update request log: {e}")
+    async def _log_request_progress(self, task_id: str, progress: float, status: str,
+                                    snapshot: Optional[Dict[str, Any]] = None,
+                                    stage: Optional[str] = None):
+        """Update request log with in-progress details (for admin log visibility)."""
+        try:
+            payload: Dict[str, Any] = {
+                "status": "processing",
+                "progress": progress,
+                "task_status": status
+            }
+            if stage:
+                payload["stage"] = stage
+            if snapshot is not None:
+                payload["upstream_response"] = snapshot
+            await self.db.update_request_log_by_task_id(
+                task_id,
+                response_body=json.dumps(payload, ensure_ascii=False)
+            )
+        except Exception as e:
+            debug_logger.log_info(f"Failed to update request progress log for {task_id}: {e}")
 
     async def _log_request(self, token_id: Optional[int], operation: str,
                           request_data: Dict[str, Any], response_data: Dict[str, Any],

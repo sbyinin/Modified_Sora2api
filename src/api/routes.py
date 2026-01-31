@@ -213,10 +213,12 @@ async def create_chat_completion(
                     # Client disconnected; allow cancellation to propagate
                     raise
                 except Exception as e:
-                    # Return OpenAI-compatible error format
+                    # Return OpenAI-compatible error format with filtered message
+                    from ..core.error_utils import filter_error_message
+                    user_message = filter_error_message(e, error_type='video')
                     error_response = {
                         "error": {
-                            "message": str(e),
+                            "message": user_message,
                             "type": "server_error",
                             "param": None,
                             "code": None
@@ -273,12 +275,14 @@ async def create_chat_completion(
                 )
 
     except Exception as e:
-        # Return OpenAI-compatible error format
+        # Return OpenAI-compatible error format with filtered message
+        from ..core.error_utils import filter_error_message
+        user_message = filter_error_message(e, error_type='video')
         return JSONResponse(
             status_code=500,
             content={
                 "error": {
-                    "message": str(e),
+                    "message": user_message,
                     "type": "server_error",
                     "param": None,
                     "code": None
