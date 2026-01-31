@@ -31,6 +31,13 @@ class DeadTokenError(Exception):
         super().__init__(message)
 
 
+class InvalidTokenError(Exception):
+    """Exception raised when a token is invalid (401 auth error)"""
+    def __init__(self, token_id: int, message: str = "Token authentication failed"):
+        self.token_id = token_id
+        super().__init__(message)
+
+
 @dataclass
 class DeadTokenDetectionConfig:
     """Configuration for dead token detection
@@ -641,9 +648,10 @@ class GenerationHandler:
                         yield chunk
                     return
 
-        # Dead token retry logic for video generation
+        # Dead token / invalid token retry logic
         dead_token_config = get_dead_token_config()
-        max_retries = dead_token_config.max_retries if (dead_token_config.enabled and is_video) else 1
+        # Enable retry for both dead tokens (video) and invalid tokens (all types)
+        max_retries = dead_token_config.max_retries if dead_token_config.enabled else 3
         disabled_token_ids = set()  # Track disabled tokens to avoid reselecting them
         last_error = None
         
@@ -713,6 +721,37 @@ class GenerationHandler:
                 
                 # Small delay before retry
                 await asyncio.sleep(1.0)
+                continue
+            
+            except InvalidTokenError as e:
+                last_error = e
+                debug_logger.log_info(
+                    f"Invalid token (auth error) on attempt {retry_attempt + 1}/{max_retries}: "
+                    f"token_id={e.token_id}"
+                )
+                
+                # Disable the invalid token
+                await self.token_manager.disable_token(e.token_id)
+                disabled_token_ids.add(e.token_id)
+                debug_logger.log_info(f"Auto-disabled invalid token {e.token_id}")
+                
+                # Notify user about invalid token
+                yield self._format_stream_chunk(
+                    reasoning_content=f"Token authentication failed (401). Token has been disabled. {'Retrying with a different token...' if retry_attempt < max_retries - 1 else 'No more retries available.'}",
+                    stage="invalid_token",
+                    status="detected",
+                    details={"token_id": e.token_id, "retry_attempt": retry_attempt + 1, "max_retries": max_retries}
+                )
+                
+                if retry_attempt >= max_retries - 1:
+                    # No more retries, raise the error
+                    raise Exception(
+                        f"Generation failed after {max_retries} attempts due to invalid tokens. "
+                        f"Last error: {str(e)}"
+                    )
+                
+                # Small delay before retry
+                await asyncio.sleep(0.5)
                 continue
         
         # Should not reach here, but just in case
@@ -998,7 +1037,54 @@ class GenerationHandler:
                     duration
                 )
             raise
+        except InvalidTokenError as e:
+            # Invalid token (401 auth error) - handled by caller for retry
+            if token_obj:
+                await self.token_manager.record_error(token_obj.id)
+
+            # Release concurrency slots
+            if is_image and token_obj:
+                await self.load_balancer.token_lock.release_lock(token_obj.id)
+                if self.concurrency_manager:
+                    await self.concurrency_manager.release_image(token_obj.id)
+            if is_video and token_obj and self.concurrency_manager:
+                await self.concurrency_manager.release_video(token_obj.id)
+
+            duration = time.time() - start_time
+            error_detail = build_error_detail(e, source_hint="auth_error")
+            if 'log_id' in dir():
+                await self._log_request_complete(
+                    log_id,
+                    error_detail,
+                    401,
+                    duration
+                )
+            else:
+                await self._log_request(
+                    token_obj.id if token_obj else None,
+                    f"generate_{model_config['type'] if model_config else 'unknown'}",
+                    {"model": model, "prompt": prompt, "has_image": image is not None},
+                    error_detail,
+                    401,
+                    duration
+                )
+            raise
         except Exception as e:
+            error_str = str(e).lower()
+            # Check if this is a 401 auth error that should trigger token retry
+            is_auth_error = (
+                "401" in error_str or
+                "authentication" in error_str or
+                "invalidated" in error_str or
+                "unauthorized" in error_str or
+                "signing in again" in error_str or
+                "token has been invalidated" in error_str
+            )
+            
+            if is_auth_error and token_obj:
+                # Convert to InvalidTokenError for retry logic
+                raise InvalidTokenError(token_obj.id, str(e))
+            
             # Release lock for image generation on error
             if is_image and token_obj:
                 await self.load_balancer.token_lock.release_lock(token_obj.id)
