@@ -3,7 +3,7 @@ import re
 import httpx
 from typing import Optional
 from ..core.config import config
-from ..utils.debug_logger import debug_logger
+from ..core.logger import debug_logger
 
 
 class Translator:
