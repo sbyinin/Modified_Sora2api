@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Optional, List, Dict
 from pathlib import Path
 from contextlib import asynccontextmanager
-from .models import Token, TokenStats, Task, RequestLog, AdminConfig, ProxyConfig, WatermarkFreeConfig, CacheConfig, GenerationConfig, TokenRefreshConfig, CloudflareSolverConfig, LambdaConfig, Character, WebDAVConfig, VideoRecord, UploadLog
+from .models import Token, TokenStats, Task, RequestLog, AdminConfig, ProxyConfig, WatermarkFreeConfig, CacheConfig, GenerationConfig, TokenRefreshConfig, CloudflareSolverConfig, LambdaConfig, TranslationConfig, Character, WebDAVConfig, VideoRecord, UploadLog
 from .db_pool import get_db_connection, get_pool
 from .config import config
 
@@ -616,13 +616,39 @@ class Database:
                     VALUES (1, 0, '/video', 0, 30)
                 """)
 
+        # Ensure translation_config has a row
+        if await self._table_exists(db, "translation_config"):
+            cursor = await db.execute("SELECT COUNT(*) FROM translation_config")
+            count = await cursor.fetchone()
+            if self._get_count_value(count) == 0:
+                # Get translation config from config_dict if provided, otherwise use defaults
+                translation_enabled = False
+                translation_api_url = None
+                translation_api_key = None
+                translation_model = "gpt-4o-mini"
+
+                if config_dict:
+                    translation_config = config_dict.get("translation", {})
+                    translation_enabled = translation_config.get("enabled", False)
+                    translation_api_url = translation_config.get("api_url", "")
+                    translation_api_key = translation_config.get("api_key", "")
+                    translation_model = translation_config.get("model", "gpt-4o-mini")
+                    # Convert empty strings to None
+                    translation_api_url = translation_api_url if translation_api_url else None
+                    translation_api_key = translation_api_key if translation_api_key else None
+
+                await db.execute("""
+                    INSERT INTO translation_config (id, translation_enabled, translation_api_url, translation_api_key, translation_model)
+                    VALUES (1, ?, ?, ?, ?)
+                """, (translation_enabled, translation_api_url, translation_api_key, translation_model))
+
 
     async def check_and_migrate_db(self, config_dict: dict = None):
         """Check database integrity and perform migrations if needed
         
         使用版本号机制，只在版本变化时执行完整迁移检查
         """
-        CURRENT_DB_VERSION = 13  # 增加此版本号以触发迁移
+        CURRENT_DB_VERSION = 14  # 增加此版本号以触发迁移
         
         db = await self._get_connection()
         try:
@@ -790,6 +816,17 @@ class Database:
                     duration FLOAT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (video_record_id) REFERENCES video_records(id)
+                )
+            """),
+            ("translation_config", """
+                CREATE TABLE IF NOT EXISTS translation_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    translation_enabled BOOLEAN DEFAULT 0,
+                    translation_api_url TEXT,
+                    translation_api_key TEXT,
+                    translation_model TEXT DEFAULT 'gpt-4o-mini',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """),
         ]
@@ -1022,7 +1059,20 @@ class Database:
                 )
             """)
 
-            # Characters table (角色�?
+            # Translation config table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS translation_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    translation_enabled BOOLEAN DEFAULT 0,
+                    translation_api_url TEXT,
+                    translation_api_key TEXT,
+                    translation_model TEXT DEFAULT 'gpt-4o-mini',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Characters table (角色卡)
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS characters (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2483,7 +2533,74 @@ class Database:
                 """, (solver_enabled, solver_api_url))
                 await db.commit()
 
-    # Character (角色�? operations
+    # Translation config operations
+    async def get_translation_config(self) -> TranslationConfig:
+        """Get translation configuration"""
+        async with self._connect(readonly=True) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM translation_config WHERE id = 1")
+            row = await cursor.fetchone()
+            if row:
+                return TranslationConfig(**dict(row))
+            # If no row exists, return a default config
+            return TranslationConfig(
+                translation_enabled=False,
+                translation_api_url=None,
+                translation_api_key=None,
+                translation_model="gpt-4o-mini"
+            )
+
+    async def update_translation_config(
+        self,
+        translation_enabled: bool = None,
+        translation_api_url: str = None,
+        translation_api_key: str = None,
+        translation_model: str = None
+    ):
+        """Update translation configuration"""
+        async with self._connect() as db:
+            # First check if row exists
+            cursor = await db.execute("SELECT COUNT(*) FROM translation_config WHERE id = 1")
+            count = await cursor.fetchone()
+            row_exists = self._get_count_value(count) > 0
+            
+            if not row_exists:
+                # Insert if not exists
+                await db.execute("""
+                    INSERT INTO translation_config (id, translation_enabled, translation_api_url, translation_api_key, translation_model)
+                    VALUES (1, ?, ?, ?, ?)
+                """, (
+                    translation_enabled if translation_enabled is not None else False,
+                    translation_api_url,
+                    translation_api_key,
+                    translation_model if translation_model is not None else "gpt-4o-mini"
+                ))
+            else:
+                # Build dynamic update query
+                updates = []
+                params = []
+                
+                if translation_enabled is not None:
+                    updates.append("translation_enabled = ?")
+                    params.append(translation_enabled)
+                if translation_api_url is not None:
+                    updates.append("translation_api_url = ?")
+                    params.append(translation_api_url)
+                if translation_api_key is not None:
+                    updates.append("translation_api_key = ?")
+                    params.append(translation_api_key)
+                if translation_model is not None:
+                    updates.append("translation_model = ?")
+                    params.append(translation_model)
+                
+                if updates:
+                    updates.append("updated_at = CURRENT_TIMESTAMP")
+                    query = f"UPDATE translation_config SET {', '.join(updates)} WHERE id = 1"
+                    await db.execute(query, params)
+            
+            await db.commit()
+
+    # Character (角色卡) operations
     async def create_character(self, character: Character) -> int:
         """Create a new character record"""
         async with self._connect() as db:

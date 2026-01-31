@@ -2045,20 +2045,26 @@ class UpdateTranslationConfigRequest(BaseModel):
 @router.get("/api/translation/config")
 async def get_translation_config(token: str = Depends(verify_admin_token)):
     """获取翻译配置"""
-    # 去掉 api_url 中的 /v1/chat/completions 后缀以显示基础地址
-    api_url = config.translation_api_url
-    if api_url and api_url.endswith("/v1/chat/completions"):
-        api_url = api_url[:-len("/v1/chat/completions")]
-    
-    return {
-        "success": True,
-        "config": {
-            "enabled": config.translation_enabled,
-            "api_url": api_url,
-            "api_key": config.translation_api_key,
-            "model": config.translation_model
+    try:
+        # 从数据库读取配置
+        db_config = await db.get_translation_config()
+        
+        # 去掉 api_url 中的 /v1/chat/completions 后缀以显示基础地址
+        api_url = db_config.translation_api_url
+        if api_url and api_url.endswith("/v1/chat/completions"):
+            api_url = api_url[:-len("/v1/chat/completions")]
+        
+        return {
+            "success": True,
+            "config": {
+                "enabled": db_config.translation_enabled,
+                "api_url": api_url,
+                "api_key": db_config.translation_api_key,
+                "model": db_config.translation_model
+            }
         }
-    }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取翻译配置失败: {str(e)}")
 
 
 @router.post("/api/translation/config")
@@ -2068,6 +2074,7 @@ async def update_translation_config(
 ):
     """更新翻译配置"""
     try:
+        # 更新内存中的配置对象
         if request.enabled is not None:
             config.set_translation_enabled(request.enabled)
         if request.api_url is not None:
@@ -2076,6 +2083,14 @@ async def update_translation_config(
             config.set_translation_api_key(request.api_key)
         if request.model is not None:
             config.set_translation_model(request.model)
+        
+        # 持久化到数据库
+        await db.update_translation_config(
+            translation_enabled=request.enabled,
+            translation_api_url=request.api_url,
+            translation_api_key=request.api_key,
+            translation_model=request.model
+        )
         
         return {
             "success": True,

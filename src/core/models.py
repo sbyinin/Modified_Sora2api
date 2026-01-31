@@ -167,6 +167,16 @@ class LambdaConfig(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
+class TranslationConfig(BaseModel):
+    """Translation configuration for auto-translating Chinese prompts to English"""
+    id: int = 1
+    translation_enabled: bool = False
+    translation_api_url: Optional[str] = None
+    translation_api_key: Optional[str] = None
+    translation_model: str = "gpt-4o-mini"
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
 class WebDAVConfig(BaseModel):
     """WebDAV configuration"""
     id: int = 1

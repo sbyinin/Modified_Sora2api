@@ -179,6 +179,16 @@ async def startup_event():
     config.set_cf_enabled(cloudflare_config.solver_enabled)
     config.set_cf_api_url(cloudflare_config.solver_api_url)
 
+    # Load translation configuration from database
+    translation_config = await db.get_translation_config()
+    config.set_translation_enabled(translation_config.translation_enabled)
+    if translation_config.translation_api_url:
+        config.set_translation_api_url(translation_config.translation_api_url)
+    if translation_config.translation_api_key:
+        config.set_translation_api_key(translation_config.translation_api_key)
+    if translation_config.translation_model:
+        config.set_translation_model(translation_config.translation_model)
+
     # Initialize concurrency manager with all tokens
     all_tokens = await db.get_all_tokens()
     await concurrency_manager.initialize(all_tokens)
