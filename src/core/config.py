@@ -380,6 +380,57 @@ class Config:
         """Get Lambda HTTP client timeout in seconds"""
         return self._config.get("lambda", {}).get("timeout", 30.0)
 
+    # ==================== Translation Configuration ====================
+
+    @property
+    def translation_enabled(self) -> bool:
+        """Get translation enabled status"""
+        return self._config.get("translation", {}).get("enabled", False)
+
+    def set_translation_enabled(self, enabled: bool):
+        """Set translation enabled/disabled"""
+        if "translation" not in self._config:
+            self._config["translation"] = {}
+        self._config["translation"]["enabled"] = enabled
+
+    @property
+    def translation_api_url(self) -> str:
+        """Get translation API URL"""
+        return self._config.get("translation", {}).get("api_url", "")
+
+    def set_translation_api_url(self, url: str):
+        """Set translation API URL"""
+        if "translation" not in self._config:
+            self._config["translation"] = {}
+        self._config["translation"]["api_url"] = url
+
+    @property
+    def translation_api_key(self) -> str:
+        """Get translation API key"""
+        return self._config.get("translation", {}).get("api_key", "")
+
+    def set_translation_api_key(self, key: str):
+        """Set translation API key"""
+        if "translation" not in self._config:
+            self._config["translation"] = {}
+        self._config["translation"]["api_key"] = key
+
+    @property
+    def translation_model(self) -> str:
+        """Get translation model name"""
+        return self._config.get("translation", {}).get("model", "gpt-4o-mini")
+
+    def set_translation_model(self, model: str):
+        """Set translation model name"""
+        if "translation" not in self._config:
+            self._config["translation"] = {}
+        self._config["translation"]["model"] = model
+
+    @property
+    def translation_timeout(self) -> int:
+        """Get translation timeout in seconds"""
+        return self._config.get("translation", {}).get("timeout", 30)
+
     # Legacy aliases for backward compatibility
     @property
     def cloudflare_solver_enabled(self) -> bool:

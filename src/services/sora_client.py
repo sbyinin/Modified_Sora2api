@@ -28,6 +28,7 @@ from ..core.http_utils import (
     get_pow_token_mock,
 )
 from .sentinel_token_manager import sentinel_token_manager
+from .translator import translator
 
 
 class SoraClient:
@@ -681,6 +682,9 @@ class SoraClient:
     async def generate_image(self, prompt: str, token: str, width: int = 360,
                             height: int = 360, media_id: Optional[str] = None) -> str:
         """Generate image (text-to-image or image-to-image)"""
+        # Translate Chinese prompt to English if enabled
+        prompt = await translator.translate_to_english(prompt)
+        
         operation = "remix" if media_id else "simple_compose"
 
         inpaint_items = []
@@ -722,6 +726,9 @@ class SoraClient:
             model: Model to use (sy_8_20251208 for standard, sy_ore for pro)
             size: Video size (small for standard, large for HD)
         """
+        # Translate Chinese prompt to English if enabled
+        prompt = await translator.translate_to_english(prompt)
+        
         inpaint_items = []
         if media_id:
             inpaint_items = [{

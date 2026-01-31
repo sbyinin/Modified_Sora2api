@@ -86,3 +86,12 @@ max_connections = 20
 max_keepalive_connections = 10
 keepalive_expiry = 20
 timeout = 30
+
+[translation]
+# 自动翻译配置 (中文 -> 英文)
+# 使用 OpenAI 兼容的 API 进行翻译
+enabled = false
+api_url = "http://64.23.250.221:3000/v1/chat/completions"
+api_key = ""
+model = "gpt-5-nano"
+timeout = 30

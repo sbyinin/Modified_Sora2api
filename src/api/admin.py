@@ -2031,3 +2031,55 @@ async def get_watermark_free_link(
             return {"success": False, "error": result["error"]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取下载链接失败: {str(e)}")
+
+
+# ========== 翻译配置 API ==========
+
+class UpdateTranslationConfigRequest(BaseModel):
+    enabled: Optional[bool] = None
+    api_url: Optional[str] = None
+    api_key: Optional[str] = None
+    model: Optional[str] = None
+
+
+@router.get("/api/translation/config")
+async def get_translation_config(token: str = Depends(verify_admin_token)):
+    """获取翻译配置"""
+    # 去掉 api_url 中的 /v1/chat/completions 后缀以显示基础地址
+    api_url = config.translation_api_url
+    if api_url and api_url.endswith("/v1/chat/completions"):
+        api_url = api_url[:-len("/v1/chat/completions")]
+    
+    return {
+        "success": True,
+        "config": {
+            "enabled": config.translation_enabled,
+            "api_url": api_url,
+            "api_key": config.translation_api_key,
+            "model": config.translation_model
+        }
+    }
+
+
+@router.post("/api/translation/config")
+async def update_translation_config(
+    request: UpdateTranslationConfigRequest,
+    token: str = Depends(verify_admin_token)
+):
+    """更新翻译配置"""
+    try:
+        if request.enabled is not None:
+            config.set_translation_enabled(request.enabled)
+        if request.api_url is not None:
+            config.set_translation_api_url(request.api_url)
+        if request.api_key is not None:
+            config.set_translation_api_key(request.api_key)
+        if request.model is not None:
+            config.set_translation_model(request.model)
+        
+        return {
+            "success": True,
+            "message": "翻译配置已更新"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"更新翻译配置失败: {str(e)}")
