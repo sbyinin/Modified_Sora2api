@@ -41,8 +41,8 @@ class Translator:
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client"""
         if self._client is None or self._client.is_closed:
-            # Use longer timeout for translation (default 60s, or config value if larger)
-            timeout = max(60, config.translation_timeout)
+            # Use longer timeout for translation (default 120s, or config value if larger)
+            timeout = max(120, config.translation_timeout)
             self._client = httpx.AsyncClient(timeout=timeout)
         return self._client
 
