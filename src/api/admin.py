@@ -2078,16 +2078,27 @@ async def update_translation_config(
         if request.enabled is not None:
             config.set_translation_enabled(request.enabled)
         if request.api_url is not None:
-            config.set_translation_api_url(request.api_url)
+            # 自动拼接完整的 API endpoint
+            full_api_url = request.api_url.rstrip("/")
+            if not full_api_url.endswith("/v1/chat/completions"):
+                full_api_url = f"{full_api_url}/v1/chat/completions"
+            config.set_translation_api_url(full_api_url)
         if request.api_key is not None:
             config.set_translation_api_key(request.api_key)
         if request.model is not None:
             config.set_translation_model(request.model)
         
         # 持久化到数据库
+        # 使用处理后的完整 URL
+        db_api_url = None
+        if request.api_url is not None:
+            db_api_url = request.api_url.rstrip("/")
+            if not db_api_url.endswith("/v1/chat/completions"):
+                db_api_url = f"{db_api_url}/v1/chat/completions"
+        
         await db.update_translation_config(
             translation_enabled=request.enabled,
-            translation_api_url=request.api_url,
+            translation_api_url=db_api_url,
             translation_api_key=request.api_key,
             translation_model=request.model
         )
