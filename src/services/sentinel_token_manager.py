@@ -122,8 +122,13 @@ class SentinelTokenManager:
     # Token 缓存 TTL (秒) - 默认 5 分钟
     TOKEN_TTL = 300
     
-    # 随机 token 模式开关
+    # 随机 token 模式开关（完全随机，不调用任何外部服务）
     USE_RANDOM_TOKEN = True
+    
+    # Lambda Only 模式：只通过 Lambda 获取 oai-did，然后生成随机 token
+    # 跳过 Playwright 浏览器（避免 SDK 加载超时问题）
+    # 优先级：USE_RANDOM_TOKEN > USE_LAMBDA_ONLY > 完整流程
+    USE_LAMBDA_ONLY = False
     
     def __init__(self):
         # 浏览器实例（复用）
@@ -558,13 +563,35 @@ class SentinelTokenManager:
         Raises:
             Exception: 获取失败时抛出异常
         """
-        # 随机模式：每次都生成新的随机 token
+        # 随机模式：每次都生成新的随机 token（不调用任何外部服务）
         if self.USE_RANDOM_TOKEN:
             print("🎲 [SentinelManager] Random token mode enabled")
             device_id = self._generate_random_device_id()
             token = self._generate_random_token()
             
             # 更新缓存（保持接口一致性）
+            self._cached_token = CachedToken(
+                token=token,
+                device_id=device_id,
+                created_at=time.time(),
+                proxy_url=None
+            )
+            return token
+        
+        # Lambda Only 模式：通过 Lambda 获取 oai-did，跳过 Playwright
+        if self.USE_LAMBDA_ONLY:
+            print("🔗 [SentinelManager] Lambda-only mode enabled")
+            try:
+                device_id = await self._fetch_oai_did_via_lambda()
+                print(f"✅ [SentinelManager] Got oai-did via Lambda: {device_id}")
+            except Exception as e:
+                print(f"⚠️ [SentinelManager] Lambda failed, using random device_id: {e}")
+                device_id = self._generate_random_device_id()
+            
+            # 生成随机 token（跳过 Playwright SDK）
+            token = self._generate_random_token()
+            
+            # 更新缓存
             self._cached_token = CachedToken(
                 token=token,
                 device_id=device_id,

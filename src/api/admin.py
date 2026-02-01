@@ -228,7 +228,8 @@ class UpdateLambdaConfigRequest(BaseModel):
     lambda_api_key: Optional[str] = None
 
 class UpdateSentinelConfigRequest(BaseModel):
-    use_random_token: bool
+    use_random_token: Optional[bool] = None
+    use_lambda_only: Optional[bool] = None
 
 class UpdateDeadTokenDetectionConfigRequest(BaseModel):
     enabled: Optional[bool] = None
@@ -1550,7 +1551,8 @@ async def get_sentinel_config(token: str = Depends(verify_admin_token)):
     return {
         "success": True,
         "config": {
-            "use_random_token": SentinelTokenManager.USE_RANDOM_TOKEN
+            "use_random_token": SentinelTokenManager.USE_RANDOM_TOKEN,
+            "use_lambda_only": SentinelTokenManager.USE_LAMBDA_ONLY
         }
     }
 
@@ -1562,13 +1564,26 @@ async def update_sentinel_config(
     """Update sentinel token configuration"""
     try:
         from ..services.sentinel_token_manager import SentinelTokenManager
-        SentinelTokenManager.USE_RANDOM_TOKEN = request.use_random_token
         
-        status = "enabled" if request.use_random_token else "disabled"
+        messages = []
+        
+        if request.use_random_token is not None:
+            SentinelTokenManager.USE_RANDOM_TOKEN = request.use_random_token
+            status = "enabled" if request.use_random_token else "disabled"
+            messages.append(f"Random token mode {status}")
+        
+        if request.use_lambda_only is not None:
+            SentinelTokenManager.USE_LAMBDA_ONLY = request.use_lambda_only
+            status = "enabled" if request.use_lambda_only else "disabled"
+            messages.append(f"Lambda-only mode {status}")
+        
         return {
             "success": True,
-            "message": f"Random sentinel token mode {status}",
-            "use_random_token": request.use_random_token
+            "message": ", ".join(messages) if messages else "No changes",
+            "config": {
+                "use_random_token": SentinelTokenManager.USE_RANDOM_TOKEN,
+                "use_lambda_only": SentinelTokenManager.USE_LAMBDA_ONLY
+            }
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update sentinel config: {str(e)}")

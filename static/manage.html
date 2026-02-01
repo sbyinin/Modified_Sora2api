@@ -570,7 +570,7 @@
                     <div class="flex items-start justify-between mb-4">
                         <div>
                             <h3 class="text-base font-semibold">Sentinel Token 配置</h3>
-                            <p class="text-xs text-muted-foreground mt-1">控制 Sentinel Token 生成方式</p>
+                            <p class="text-xs text-muted-foreground mt-1">控制 Sentinel Token 生成方式（优先级：随机 Token > Lambda Only > 完整流程）</p>
                         </div>
                     </div>
                     <div class="space-y-4">
@@ -579,11 +579,18 @@
                                 <input type="checkbox" id="cfgSentinelRandomToken" class="h-4 w-4 rounded border-input" onchange="toggleSentinelRandomToken()">
                                 <span class="text-sm font-medium">使用随机 Token</span>
                             </label>
-                            <p class="text-xs text-muted-foreground mt-2">开启后将跳过 Playwright/Lambda 生成流程，直接使用随机生成的 Token（用于测试或绕过检测）</p>
+                            <p class="text-xs text-muted-foreground mt-2">开启后将跳过所有外部服务，直接使用随机生成的 Token 和 Device ID（最高优先级）</p>
+                        </div>
+                        <div class="rounded-md border border-border/60 bg-muted/20 p-3">
+                            <label class="inline-flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" id="cfgSentinelLambdaOnly" class="h-4 w-4 rounded border-input" onchange="toggleSentinelLambdaOnly()">
+                                <span class="text-sm font-medium">Lambda Only 模式</span>
+                            </label>
+                            <p class="text-xs text-muted-foreground mt-2">开启后只通过 Lambda 获取 oai-did，跳过 Playwright 浏览器（避免 SDK 加载超时问题）</p>
                         </div>
                         <div class="rounded-md border border-amber-200 bg-amber-50 p-3">
                             <p class="text-xs text-amber-900">
-                                <strong>注意：</strong>随机 Token 可能导致请求被上游拒绝，仅用于特殊场景
+                                <strong>注意：</strong>随机 Token 可能导致请求被上游拒绝；Lambda Only 需要先配置并启用 Lambda
                             </p>
                         </div>
                     </div>
@@ -1425,8 +1432,9 @@
         updateAPIKey=async()=>{const newKey=$('cfgNewAPIKey').value.trim();if(!newKey)return showToast('请输入新的 API Key','error');if(newKey.length<6)return showToast('API Key 至少6个字符','error');if(!confirm('确定要更新 API Key 吗？更新后需要通知所有客户端使用新密钥。'))return;try{const r=await apiRequest('/api/admin/apikey',{method:'POST',body:JSON.stringify({new_api_key:newKey})});if(!r)return;const d=await r.json();if(d.success){showToast('API Key 更新成功','success');$('cfgCurrentAPIKey').value=newKey;$('cfgNewAPIKey').value=''}else{showToast('更新失败: '+(d.detail||'未知错误'),'error')}}catch(e){showToast('更新失败: '+e.message,'error')}},
         toggleDebugMode=async()=>{const enabled=$('cfgDebugEnabled').checked;try{const r=await apiRequest('/api/admin/debug',{method:'POST',body:JSON.stringify({enabled:enabled})});if(!r)return;const d=await r.json();if(d.success){showToast(enabled?'调试模式已开启':'调试模式已关闭','success')}else{showToast('操作失败: '+(d.detail||'未知错误'),'error');$('cfgDebugEnabled').checked=!enabled}}catch(e){showToast('操作失败: '+e.message,'error');$('cfgDebugEnabled').checked=!enabled}},
         // Sentinel Token 配置函数
-        loadSentinelConfig=async()=>{try{const r=await apiRequest('/api/sentinel/config');if(!r)return;const d=await r.json();if(d.success&&d.config){$('cfgSentinelRandomToken').checked=d.config.use_random_token||false}}catch(e){console.error('加载Sentinel配置失败:',e)}},
+        loadSentinelConfig=async()=>{try{const r=await apiRequest('/api/sentinel/config');if(!r)return;const d=await r.json();if(d.success&&d.config){$('cfgSentinelRandomToken').checked=d.config.use_random_token||false;$('cfgSentinelLambdaOnly').checked=d.config.use_lambda_only||false}}catch(e){console.error('加载Sentinel配置失败:',e)}},
         toggleSentinelRandomToken=async()=>{const enabled=$('cfgSentinelRandomToken').checked;try{const r=await apiRequest('/api/sentinel/config',{method:'POST',body:JSON.stringify({use_random_token:enabled})});if(!r)return;const d=await r.json();if(d.success){showToast(enabled?'随机 Token 模式已开启':'随机 Token 模式已关闭','success')}else{showToast('操作失败: '+(d.detail||'未知错误'),'error');$('cfgSentinelRandomToken').checked=!enabled}}catch(e){showToast('操作失败: '+e.message,'error');$('cfgSentinelRandomToken').checked=!enabled}},
+        toggleSentinelLambdaOnly=async()=>{const enabled=$('cfgSentinelLambdaOnly').checked;try{const r=await apiRequest('/api/sentinel/config',{method:'POST',body:JSON.stringify({use_lambda_only:enabled})});if(!r)return;const d=await r.json();if(d.success){showToast(enabled?'Lambda Only 模式已开启':'Lambda Only 模式已关闭','success')}else{showToast('操作失败: '+(d.detail||'未知错误'),'error');$('cfgSentinelLambdaOnly').checked=!enabled}}catch(e){showToast('操作失败: '+e.message,'error');$('cfgSentinelLambdaOnly').checked=!enabled}},
         // 死号检测配置函数
         loadDeadTokenConfig=async()=>{try{const r=await apiRequest('/api/dead-token-detection/config');if(!r)return;const d=await r.json();if(d.success&&d.config){$('cfgDeadTokenEnabled').checked=d.config.enabled||false;$('cfgDeadTokenTimeout').value=d.config.zero_progress_timeout||120;$('cfgDeadTokenMaxRetries').value=d.config.max_retries||3}}catch(e){console.error('加载死号检测配置失败:',e)}},
         toggleDeadTokenDetection=async()=>{const enabled=$('cfgDeadTokenEnabled').checked;try{const r=await apiRequest('/api/dead-token-detection/config',{method:'POST',body:JSON.stringify({enabled:enabled})});if(!r)return;const d=await r.json();if(d.success){showToast(enabled?'死号检测已开启':'死号检测已关闭','success')}else{showToast('操作失败: '+(d.detail||'未知错误'),'error');$('cfgDeadTokenEnabled').checked=!enabled}}catch(e){showToast('操作失败: '+e.message,'error');$('cfgDeadTokenEnabled').checked=!enabled}},
