@@ -128,15 +128,22 @@ class Translator:
         Returns:
             Translated English text with appropriate language directives
         """
+        print(f"\U0001f310 [Translator] translate_to_english called, enabled={config.translation_enabled}")
+        
         if not config.translation_enabled:
+            print("\U0001f310 [Translator] Translation disabled, returning original")
             return text
 
         if not self._needs_translation(text):
+            print("\U0001f310 [Translator] No translation needed (no CJK characters)")
             return text
 
         if not config.translation_api_url or not config.translation_api_key:
+            print(f"\U0001f310 [Translator] API not configured: url={config.translation_api_url}, key={'***' if config.translation_api_key else 'None'}")
             debug_logger.log_info("Translation API not configured, skipping translation")
             return text
+        
+        print(f"\U0001f310 [Translator] Starting translation for: {text[:50]}...")
 
         # Extract @username mentions before translation to guarantee preservation
         mentions, text_to_translate = self._extract_mentions(text)
@@ -167,24 +174,28 @@ class Translator:
                         }
                     ],
                     "temperature": 0.3,
-                    "max_tokens": 1000
+                    "max_tokens": 4000,
+                    "stream": False
                 }
             )
             
             if response.status_code == 200:
                 result = response.json()
+                print(f"\u2705 [Translator] API response received")
                 translated = result.get("choices", [{}])[0].get("message", {}).get("content", "")
                 if translated:
                     translated = translated.strip()
                     # Restore @username mentions - guaranteed not to lose them
                     translated = self._restore_mentions(mentions, translated)
-                    debug_logger.log_info(f"Translated prompt: '{text}' -> '{translated}'")
+                    print(f"\u2705 [Translator] SUCCESS: '{text[:30]}...' -> '{translated[:30]}...'")
                     return translated
+                else:
+                    print(f"\u274c [Translator] Empty content returned")
             else:
-                debug_logger.log_info(f"Translation API error: {response.status_code} - {response.text}")
+                print(f"\u274c [Translator] API error: {response.status_code}")
 
         except Exception as e:
-            debug_logger.log_info(f"Translation failed: {e}")
+            print(f"\u274c [Translator] Exception: {e}")
 
         return text
 
