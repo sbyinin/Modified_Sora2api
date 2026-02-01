@@ -176,7 +176,7 @@ class Translator:
                         }
                     ],
                     "temperature": 0.3,
-                    "max_tokens": 4000,
+                    "max_tokens": 16000,
                     "stream": False
                 }
             )
