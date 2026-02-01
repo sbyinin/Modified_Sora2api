@@ -314,7 +314,8 @@ class SentinelTokenManager:
         
         # 直接获取配置，不检查 is_enabled（允许只用于获取 oai-did）
         configs = await lambda_mgr._get_config()
-        endpoints = lambda_mgr._get_endpoints(configs)
+        # 使用 _get_all_endpoints 而不是 _get_endpoints，这样即使关闭“启用 Lambda 创建”也能获取端点
+        endpoints = lambda_mgr._get_all_endpoints(configs)
         
         if not endpoints:
             raise Exception("No Lambda endpoints configured. Please add Lambda URLs in settings.")

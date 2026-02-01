@@ -141,11 +141,29 @@ class LambdaManager:
         return urls
 
     def _get_endpoints(self, configs: List[LambdaConfig]) -> List[Dict[str, str]]:
-        """Build endpoint list from per-row configurations"""
+        """Build endpoint list from per-row configurations (only enabled)"""
         endpoints = []
         for cfg in configs:
             if not cfg.lambda_enabled:
                 continue
+            if not cfg.lambda_api_url:
+                continue
+            api_key = cfg.lambda_api_key or ""
+            if not api_key:
+                continue
+            endpoints.append({
+                "url": cfg.lambda_api_url.strip(),
+                "key": api_key
+            })
+        return endpoints
+    
+    def _get_all_endpoints(self, configs: List[LambdaConfig]) -> List[Dict[str, str]]:
+        """Build endpoint list from all configurations (ignore enabled flag)
+        
+        Used for Lambda Only mode to get oai-did without enabling Lambda create.
+        """
+        endpoints = []
+        for cfg in configs:
             if not cfg.lambda_api_url:
                 continue
             api_key = cfg.lambda_api_key or ""
