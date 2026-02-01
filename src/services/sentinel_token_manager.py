@@ -675,7 +675,7 @@ class SentinelTokenManager:
                     token=token,
                     device_id=device_id,
                     created_at=time.time(),
-                    proxy_url=proxy_url
+                    proxy_url=None  # SDK 不使用代理
                 )
                 
                 print(f"✅ [SentinelManager] Token cached (TTL: {self.TOKEN_TTL}s, Lambda Only mode)")
