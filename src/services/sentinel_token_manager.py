@@ -530,13 +530,19 @@ class SentinelTokenManager:
             
             await page.route("**/*", handle_route)
             
-            # hack 方式加载
-            await page.goto("https://pow.local/__sentinel__", wait_until="load", timeout=30000)
+            # 监听网络请求失败事件
+            page.on("requestfailed", lambda request: print(f"❌ [SentinelManager] Request failed: {request.url} - {request.failure}"))
+            page.on("response", lambda response: print(f"📡 [SentinelManager] Response: {response.url} - {response.status}") if "sdk.js" in response.url else None)
             
-            # 等待 SDK 加载
+            # hack 方式加载
+            print(f"🚀 [SentinelManager] Loading sentinel SDK page...")
+            await page.goto("https://pow.local/__sentinel__", wait_until="load", timeout=60000)
+            
+            # 等待 SDK 加载 - 增加超时到 60 秒
+            print(f"⏳ [SentinelManager] Waiting for SentinelSDK to load...")
             await page.wait_for_function(
                 "typeof SentinelSDK !== 'undefined' && typeof SentinelSDK.token === 'function'",
-                timeout=15000
+                timeout=60000
             )
             
             # 调用 SDK
@@ -657,12 +663,10 @@ class SentinelTokenManager:
                     device_id = await self._fetch_oai_did_local(proxy_url)
                 
                 # 2. 通过 Playwright 生成 token（使用 Lambda 获取的 oai-did）
-                proxy_mgr = await self._get_proxy_manager()
-                proxy_url = await proxy_mgr.get_proxy_url(token_id)
-                
+                # 注意：api.sorai2.fun 不需要代理，所以不传 proxy_url
                 token = await self._generate_token_via_browser(
                     device_id=device_id,
-                    proxy_url=proxy_url,
+                    proxy_url=None,  # SDK 不需要代理
                     flow=flow
                 )
                 
@@ -703,9 +707,10 @@ class SentinelTokenManager:
                 device_id = await self._fetch_oai_did_local(proxy_url)
             
             # 3. 通过 Playwright 生成 token
+            # 注意：api.sorai2.fun 不需要代理，所以不传 proxy_url
             token = await self._generate_token_via_browser(
                 device_id=device_id,
-                proxy_url=proxy_url,
+                proxy_url=None,  # SDK 不需要代理
                 flow=flow
             )
             
