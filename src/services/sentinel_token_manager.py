@@ -305,17 +305,19 @@ class SentinelTokenManager:
         raise Exception("Failed to fetch oai-did locally after 3 attempts")
 
     async def _fetch_oai_did_via_lambda(self) -> str:
-        """通过 Lambda 获取 oai-did"""
+        """通过 Lambda 获取 oai-did
+        
+        注意：此方法不依赖 "启用 Lambda 创建" 开关
+        只要配置了 Lambda 端点就可以使用
+        """
         lambda_mgr = await self._get_lambda_manager()
         
-        if not await lambda_mgr.is_enabled():
-            raise Exception("Lambda is not enabled")
-        
+        # 直接获取配置，不检查 is_enabled（允许只用于获取 oai-did）
         configs = await lambda_mgr._get_config()
         endpoints = lambda_mgr._get_endpoints(configs)
         
         if not endpoints:
-            raise Exception("No Lambda endpoints configured")
+            raise Exception("No Lambda endpoints configured. Please add Lambda URLs in settings.")
         
         # 尝试每个 endpoint
         last_error = None
