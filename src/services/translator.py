@@ -184,7 +184,18 @@ class Translator:
             if response.status_code == 200:
                 result = response.json()
                 print(f"\u2705 [Translator] API response received")
+                
+                # Try standard OpenAI format first
                 translated = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                
+                # If empty, try alternative response formats
+                if not translated:
+                    # Some APIs return content directly in choices[0].text
+                    translated = result.get("choices", [{}])[0].get("text", "")
+                if not translated:
+                    # Some APIs return in result.content or result.text
+                    translated = result.get("content", "") or result.get("text", "")
+                
                 if translated:
                     translated = translated.strip()
                     # Restore @username mentions - guaranteed not to lose them
@@ -192,7 +203,9 @@ class Translator:
                     print(f"\u2705 [Translator] SUCCESS: '{text[:30]}...' -> '{translated[:30]}...'")
                     return translated
                 else:
-                    print(f"\u274c [Translator] Empty content returned")
+                    print(f"\u274c [Translator] Empty content returned. Response structure: {list(result.keys())}")
+                    if "choices" in result and result["choices"]:
+                        print(f"\u274c [Translator] choices[0] structure: {result['choices'][0]}")
             else:
                 print(f"\u274c [Translator] API error: {response.status_code}")
 
