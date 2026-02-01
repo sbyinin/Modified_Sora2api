@@ -41,7 +41,9 @@ class Translator:
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client"""
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=config.translation_timeout)
+            # Use longer timeout for translation (default 60s, or config value if larger)
+            timeout = max(60, config.translation_timeout)
+            self._client = httpx.AsyncClient(timeout=timeout)
         return self._client
 
     def _needs_translation(self, text: str) -> bool:
@@ -195,7 +197,9 @@ class Translator:
                 print(f"\u274c [Translator] API error: {response.status_code}")
 
         except Exception as e:
-            print(f"\u274c [Translator] Exception: {e}")
+            import traceback
+            print(f"\u274c [Translator] Exception: {type(e).__name__}: {e}")
+            traceback.print_exc()
 
         return text
 
