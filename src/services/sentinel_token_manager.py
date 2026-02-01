@@ -581,26 +581,40 @@ class SentinelTokenManager:
             )
             return token
         
-        # Lambda Only 模式：通过 Lambda 获取 oai-did，跳过 Playwright
+        # Lambda Only 模式：只通过 Lambda 获取 oai-did，然后用 Playwright 生成 token
         if self.USE_LAMBDA_ONLY:
-            print("🔗 [SentinelManager] Lambda-only mode enabled")
+            print("🔗 [SentinelManager] Lambda-only mode enabled (Lambda for oai-did, Playwright for token)")
+            
+            # 1. 通过 Lambda 获取 oai-did
             try:
                 device_id = await self._fetch_oai_did_via_lambda()
                 print(f"✅ [SentinelManager] Got oai-did via Lambda: {device_id}")
             except Exception as e:
-                print(f"⚠️ [SentinelManager] Lambda failed, using random device_id: {e}")
-                device_id = self._generate_random_device_id()
+                print(f"⚠️ [SentinelManager] Lambda failed for oai-did, falling back to local: {e}")
+                # 备用：本地获取 oai-did
+                proxy_mgr = await self._get_proxy_manager()
+                proxy_url = await proxy_mgr.get_proxy_url(token_id)
+                device_id = await self._fetch_oai_did_local(proxy_url)
             
-            # 生成随机 token（跳过 Playwright SDK）
-            token = self._generate_random_token()
+            # 2. 通过 Playwright 生成 token（使用 Lambda 获取的 oai-did）
+            proxy_mgr = await self._get_proxy_manager()
+            proxy_url = await proxy_mgr.get_proxy_url(token_id)
+            
+            token = await self._generate_token_via_browser(
+                device_id=device_id,
+                proxy_url=proxy_url,
+                flow=flow
+            )
             
             # 更新缓存
             self._cached_token = CachedToken(
                 token=token,
                 device_id=device_id,
                 created_at=time.time(),
-                proxy_url=None
+                proxy_url=proxy_url
             )
+            
+            print(f"✅ [SentinelManager] Token generated via Playwright (Lambda Only mode)")
             return token
         
         # 快速路径（无锁）

@@ -586,7 +586,7 @@
                                 <input type="checkbox" id="cfgSentinelLambdaOnly" class="h-4 w-4 rounded border-input" onchange="toggleSentinelLambdaOnly()">
                                 <span class="text-sm font-medium">Lambda Only 模式</span>
                             </label>
-                            <p class="text-xs text-muted-foreground mt-2">开启后只通过 Lambda 获取 oai-did，跳过 Playwright 浏览器（避免 SDK 加载超时问题）</p>
+                            <p class="text-xs text-muted-foreground mt-2">开启后只通过 Lambda 获取 oai-did，然后用 Playwright 生成 token（避免本地获取 oai-did 被封 IP）</p>
                         </div>
                         <div class="rounded-md border border-amber-200 bg-amber-50 p-3">
                             <p class="text-xs text-amber-900">
