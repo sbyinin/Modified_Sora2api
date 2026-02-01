@@ -29,6 +29,7 @@ from ..core.http_utils import (
 )
 from .sentinel_token_manager import sentinel_token_manager
 from .translator import translator
+from .exceptions import HeavyLoadError
 
 
 class SoraClient:
@@ -457,7 +458,7 @@ class SoraClient:
                     )
                     raise Exception(error_msg)
 
-            # Retry on heavy load message (even if status is not 5xx)
+            # Detect heavy load error - immediately raise HeavyLoadError to switch token
             heavy_load_message = "We're under heavy load, please try again later."
             error_detail = None
             if response_json and isinstance(response_json, dict):
@@ -469,14 +470,12 @@ class SoraClient:
                 or (response.text and heavy_load_message in response.text)
             )
             if heavy_load_detected:
-                heavy_load_max_retries = min(max_retries, 3)
-                if attempt < heavy_load_max_retries:
-                    wait_time = min((attempt + 1) * 2, 10) + random.uniform(0.5, 1.5)
-                    print(f"⚠️ Heavy load detected, retrying in {wait_time:.1f}s ({attempt + 1}/{heavy_load_max_retries})...")
-                    await asyncio.sleep(wait_time)
-                    attempt += 1
-                    continue
-                raise Exception(heavy_load_message)
+                # Raise HeavyLoadError immediately to switch token (no retry on same token)
+                print(f"⚠️ Heavy load detected, raising HeavyLoadError to switch token...")
+                raise HeavyLoadError(
+                    token_id=token_id,
+                    message=heavy_load_message
+                )
 
             # Check status
             if response.status_code not in [200, 201]:

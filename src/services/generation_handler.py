@@ -23,19 +23,7 @@ from ..core.redis_manager import get_redis_manager
 from ..core.error_utils import build_error_detail
 
 
-class DeadTokenError(Exception):
-    """Exception raised when a token is detected as dead (progress stuck at 0%)"""
-    def __init__(self, token_id: int, task_id: str, message: str = "Dead token detected"):
-        self.token_id = token_id
-        self.task_id = task_id
-        super().__init__(message)
-
-
-class InvalidTokenError(Exception):
-    """Exception raised when a token is invalid (401 auth error)"""
-    def __init__(self, token_id: int, message: str = "Token authentication failed"):
-        self.token_id = token_id
-        super().__init__(message)
+from .exceptions import DeadTokenError, InvalidTokenError, HeavyLoadError
 
 
 @dataclass
@@ -752,6 +740,37 @@ class GenerationHandler:
                 
                 # Small delay before retry
                 await asyncio.sleep(0.5)
+                continue
+            
+            except HeavyLoadError as e:
+                last_error = e
+                debug_logger.log_info(
+                    f"Heavy load error on attempt {retry_attempt + 1}/{max_retries}: "
+                    f"token_id={e.token_id}"
+                )
+                
+                # Disable the token that got heavy_load error
+                await self.token_manager.disable_token(e.token_id)
+                disabled_token_ids.add(e.token_id)
+                debug_logger.log_info(f"Auto-disabled token {e.token_id} due to heavy_load")
+                
+                # Notify user about heavy_load
+                yield self._format_stream_chunk(
+                    reasoning_content=f"Server under heavy load. Token has been disabled. {'Switching to a different token...' if retry_attempt < max_retries - 1 else 'No more retries available.'}",
+                    stage="heavy_load",
+                    status="detected",
+                    details={"token_id": e.token_id, "retry_attempt": retry_attempt + 1, "max_retries": max_retries}
+                )
+                
+                if retry_attempt >= max_retries - 1:
+                    # No more retries, raise the error
+                    raise Exception(
+                        f"Generation failed after {max_retries} attempts due to heavy load. "
+                        f"Last error: {str(e)}"
+                    )
+                
+                # Very small delay before retry with new token
+                await asyncio.sleep(0.3)
                 continue
         
         # Should not reach here, but just in case

@@ -189,6 +189,17 @@ async def startup_event():
     if translation_config.translation_model:
         config.set_translation_model(translation_config.translation_model)
 
+    # Load Sora App headers configuration from database
+    from .core.http_utils import set_sora_app_config
+    sora_app_config = await db.get_sora_app_config()
+    set_sora_app_config(
+        enabled=sora_app_config.sora_app_headers_enabled,
+        package_name=sora_app_config.package_name,
+        client_type=sora_app_config.client_type
+    )
+    sora_app_status = "enabled" if sora_app_config.sora_app_headers_enabled else "disabled"
+    print(f"✓ Sora App headers configuration loaded ({sora_app_status})")
+
     # Initialize concurrency manager with all tokens
     all_tokens = await db.get_all_tokens()
     await concurrency_manager.initialize(all_tokens)

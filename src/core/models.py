@@ -177,6 +177,19 @@ class TranslationConfig(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
+class SoraAppConfig(BaseModel):
+    """Sora App headers configuration
+    
+    Controls whether to include oai-package-name and oai-client-type headers in requests.
+    These headers identify the request as coming from the Sora mobile app.
+    """
+    id: int = 1
+    sora_app_headers_enabled: bool = True  # Whether to include Sora App headers
+    package_name: str = "com.openai.sora"  # oai-package-name header value
+    client_type: str = "android"  # oai-client-type header value
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
 class WebDAVConfig(BaseModel):
     """WebDAV configuration"""
     id: int = 1

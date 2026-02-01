@@ -14,7 +14,8 @@ import json
 import time
 import secrets
 import base64
-from typing import Optional, Dict, Tuple
+import random
+from typing import Optional, Dict, Tuple, List
 from dataclasses import dataclass
 
 # Playwright 延迟导入
@@ -57,6 +58,62 @@ class CachedToken:
     device_id: str
     created_at: float
     proxy_url: Optional[str] = None
+
+
+# User-Agent 池 - 模拟真实浏览器
+USER_AGENTS: List[str] = [
+    # Chrome Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 11.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    # Chrome macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    # Edge Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0",
+    # Firefox Windows
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0",
+    # Firefox macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0",
+    # Safari macOS
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15",
+]
+
+# 屏幕分辨率池
+SCREEN_RESOLUTIONS: List[Dict] = [
+    {'width': 1920, 'height': 1080},
+    {'width': 1536, 'height': 864},
+    {'width': 1440, 'height': 900},
+    {'width': 1366, 'height': 768},
+    {'width': 2560, 'height': 1440},
+    {'width': 1680, 'height': 1050},
+    {'width': 1280, 'height': 720},
+]
+
+# 语言池
+LOCALES: List[str] = [
+    "en-US",
+    "en-GB",
+    "zh-CN",
+    "zh-TW",
+    "ja-JP",
+    "ko-KR",
+]
+
+# 时区池
+TIMEZONES: List[str] = [
+    "America/New_York",
+    "America/Los_Angeles",
+    "America/Chicago",
+    "Europe/London",
+    "Asia/Tokyo",
+    "Asia/Shanghai",
+    "Asia/Seoul",
+]
 
 
 class SentinelTokenManager:
@@ -300,39 +357,138 @@ class SentinelTokenManager:
         
         raise Exception(f"All Lambda endpoints failed: {last_error}")
     
+    @staticmethod
+    def _get_random_fingerprint() -> Dict:
+        """生成随机浏览器指纹"""
+        ua = random.choice(USER_AGENTS)
+        resolution = random.choice(SCREEN_RESOLUTIONS)
+        locale = random.choice(LOCALES)
+        timezone = random.choice(TIMEZONES)
+        
+        # 根据 UA 判断平台
+        if "Windows" in ua:
+            platform = "Win32"
+        elif "Macintosh" in ua:
+            platform = "MacIntel"
+        else:
+            platform = "Win32"
+        
+        return {
+            'user_agent': ua,
+            'viewport': resolution,
+            'locale': locale,
+            'timezone': timezone,
+            'platform': platform,
+        }
+    
     async def _generate_token_via_browser(
         self,
         device_id: str,
         proxy_url: Optional[str] = None,
         flow: str = "sora_2_create_task"
     ) -> str:
-        """通过 Playwright 浏览器生成 sentinel token"""
+        """通过 Playwright 浏览器生成 sentinel token
+        
+        使用 sorai2.fun 域名的 SDK 和路由拦截方式
+        """
         browser = await self._get_browser(proxy_url)
         
+        # 生成随机指纹
+        fingerprint = self._get_random_fingerprint()
+        
         context = await browser.new_context(
-            viewport={'width': 390, 'height': 844},
-            user_agent='Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
-            bypass_csp=True
+            viewport=fingerprint['viewport'],
+            user_agent=fingerprint['user_agent'],
+            locale=fingerprint['locale'],
+            timezone_id=fingerprint['timezone'],
+            bypass_csp=True,
+            # 额外隐藏头
+            extra_http_headers={
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+                'Accept-Language': f'{fingerprint["locale"]},{fingerprint["locale"].split("-")[0]};q=0.9,en;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br, zstd',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache',
+                'Sec-Ch-Ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+                'Sec-Ch-Ua-Mobile': '?0',
+                'Sec-Ch-Ua-Platform': f'"{"Windows" if "Win" in fingerprint["platform"] else "macOS"}"',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Upgrade-Insecure-Requests': '1',
+                'DNT': '1',
+            }
         )
         
-        # 设置 cookie
+        # 注入更多浏览器属性以绕过检测
+        await context.add_init_script('''
+            // 隐藏 webdriver 标志
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            
+            // 伪造 plugins
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [
+                    { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+                    { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+                    { name: 'Native Client', filename: 'internal-nacl-plugin' }
+                ]
+            });
+            
+            // 伪造 languages
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en', 'zh-CN'] });
+            
+            // 伪造 platform
+            Object.defineProperty(navigator, 'platform', { get: () => '""" + fingerprint['platform'] + """' });
+            
+            // 伪造 hardwareConcurrency
+            Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => ''' + str(random.choice([4, 8, 12, 16])) + ''' });
+            
+            // 伪造 deviceMemory
+            Object.defineProperty(navigator, 'deviceMemory', { get: () => ''' + str(random.choice([4, 8, 16, 32])) + ''' });
+            
+            // 隐藏自动化相关属性
+            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+            
+            // 伪造 chrome 对象
+            window.chrome = {
+                runtime: {},
+                loadTimes: function() {},
+                csi: function() {},
+                app: {}
+            };
+            
+            // 伪造权限 API
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                    Promise.resolve({ state: Notification.permission }) :
+                    originalQuery(parameters)
+            );
+        ''')
+        
+        # 设置 cookie - 使用 sorai2.fun 域名
         await context.add_cookies([{
             'name': 'oai-did',
             'value': device_id,
-            'domain': 'sora.chatgpt.com',
+            'domain': 'api.sorai2.fun',
             'path': '/'
         }])
         
         page = await context.new_page()
         
-        # 路由拦截 - hack 注入 SDK
-        inject_html = '''<!DOCTYPE html><html><head><script src="https://chatgpt.com/backend-api/sentinel/sdk.js"></script></head><body></body></html>'''
+        print(f"🌐 [SentinelManager] Browser fingerprint: UA={fingerprint['user_agent'][:50]}..., Resolution={fingerprint['viewport']}, Locale={fingerprint['locale']}")
+        
+        # 路由拦截 - 使用 sorai2.fun 的 SDK
+        inject_html = '<!DOCTYPE html><html><head><script src="https://api.sorai2.fun/backend-api/sentinel/sdk.js"></script></head><body></body></html>'
         
         async def handle_route(route):
             url = route.request.url
             if "__sentinel__" in url:
                 await route.fulfill(status=200, content_type="text/html", body=inject_html)
-            elif "/sentinel/" in url or "chatgpt.com" in url:
+            elif "/sentinel/" in url or "sorai2.fun" in url:
                 await route.continue_()
             else:
                 await route.abort()
@@ -341,7 +497,7 @@ class SentinelTokenManager:
         
         try:
             # hack 方式加载
-            await page.goto("https://sora.chatgpt.com/__sentinel__", wait_until="load", timeout=30000)
+            await page.goto("https://pow.local/__sentinel__", wait_until="load", timeout=30000)
             
             # 等待 SDK 加载
             await page.wait_for_function(
@@ -361,7 +517,7 @@ class SentinelTokenManager:
             ''')
             
             if token and not token.startswith('ERROR'):
-                print(f"✅ [SentinelManager] Sentinel token generated successfully")
+                print(f"✅ [SentinelManager] Sentinel token generated successfully (len={len(token)})")
                 return token
             else:
                 raise Exception(f"SDK error: {token}")

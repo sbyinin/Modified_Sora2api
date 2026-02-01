@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Optional, List, Dict
 from pathlib import Path
 from contextlib import asynccontextmanager
-from .models import Token, TokenStats, Task, RequestLog, AdminConfig, ProxyConfig, WatermarkFreeConfig, CacheConfig, GenerationConfig, TokenRefreshConfig, CloudflareSolverConfig, LambdaConfig, TranslationConfig, Character, WebDAVConfig, VideoRecord, UploadLog
+from .models import Token, TokenStats, Task, RequestLog, AdminConfig, ProxyConfig, WatermarkFreeConfig, CacheConfig, GenerationConfig, TokenRefreshConfig, CloudflareSolverConfig, LambdaConfig, TranslationConfig, SoraAppConfig, Character, WebDAVConfig, VideoRecord, UploadLog
 from .db_pool import get_db_connection, get_pool
 from .config import config
 
@@ -642,6 +642,27 @@ class Database:
                     VALUES (1, ?, ?, ?, ?)
                 """, (translation_enabled, translation_api_url, translation_api_key, translation_model))
 
+        # Ensure sora_app_config has a row
+        if await self._table_exists(db, "sora_app_config"):
+            cursor = await db.execute("SELECT COUNT(*) FROM sora_app_config")
+            count = await cursor.fetchone()
+            if self._get_count_value(count) == 0:
+                # Get sora app config from config_dict if provided, otherwise use defaults
+                sora_app_headers_enabled = True
+                package_name = "com.openai.sora"
+                client_type = "android"
+
+                if config_dict:
+                    sora_app_config = config_dict.get("sora_app", {})
+                    sora_app_headers_enabled = sora_app_config.get("headers_enabled", True)
+                    package_name = sora_app_config.get("package_name", "com.openai.sora")
+                    client_type = sora_app_config.get("client_type", "android")
+
+                await db.execute("""
+                    INSERT INTO sora_app_config (id, sora_app_headers_enabled, package_name, client_type)
+                    VALUES (1, ?, ?, ?)
+                """, (sora_app_headers_enabled, package_name, client_type))
+
 
     async def check_and_migrate_db(self, config_dict: dict = None):
         """Check database integrity and perform migrations if needed
@@ -825,6 +846,16 @@ class Database:
                     translation_api_url TEXT,
                     translation_api_key TEXT,
                     translation_model TEXT DEFAULT 'gpt-4o-mini',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """),
+            ("sora_app_config", """
+                CREATE TABLE IF NOT EXISTS sora_app_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    sora_app_headers_enabled BOOLEAN DEFAULT 1,
+                    package_name TEXT DEFAULT 'com.openai.sora',
+                    client_type TEXT DEFAULT 'android',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -1067,6 +1098,18 @@ class Database:
                     translation_api_url TEXT,
                     translation_api_key TEXT,
                     translation_model TEXT DEFAULT 'gpt-4o-mini',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Sora App config table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS sora_app_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    sora_app_headers_enabled BOOLEAN DEFAULT 1,
+                    package_name TEXT DEFAULT 'com.openai.sora',
+                    client_type TEXT DEFAULT 'android',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -2596,6 +2639,67 @@ class Database:
                 if updates:
                     updates.append("updated_at = CURRENT_TIMESTAMP")
                     query = f"UPDATE translation_config SET {', '.join(updates)} WHERE id = 1"
+                    await db.execute(query, params)
+            
+            await db.commit()
+
+    # Sora App config operations
+    async def get_sora_app_config(self) -> SoraAppConfig:
+        """Get Sora App headers configuration"""
+        async with self._connect(readonly=True) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM sora_app_config WHERE id = 1")
+            row = await cursor.fetchone()
+            if row:
+                return SoraAppConfig(**dict(row))
+            # If no row exists, return a default config
+            return SoraAppConfig(
+                sora_app_headers_enabled=True,
+                package_name="com.openai.sora",
+                client_type="android"
+            )
+
+    async def update_sora_app_config(
+        self,
+        sora_app_headers_enabled: bool = None,
+        package_name: str = None,
+        client_type: str = None
+    ):
+        """Update Sora App headers configuration"""
+        async with self._connect() as db:
+            # First check if row exists
+            cursor = await db.execute("SELECT COUNT(*) FROM sora_app_config WHERE id = 1")
+            count = await cursor.fetchone()
+            row_exists = self._get_count_value(count) > 0
+            
+            if not row_exists:
+                # Insert if not exists
+                await db.execute("""
+                    INSERT INTO sora_app_config (id, sora_app_headers_enabled, package_name, client_type)
+                    VALUES (1, ?, ?, ?)
+                """, (
+                    sora_app_headers_enabled if sora_app_headers_enabled is not None else True,
+                    package_name if package_name is not None else "com.openai.sora",
+                    client_type if client_type is not None else "android"
+                ))
+            else:
+                # Build dynamic update query
+                updates = []
+                params = []
+                
+                if sora_app_headers_enabled is not None:
+                    updates.append("sora_app_headers_enabled = ?")
+                    params.append(sora_app_headers_enabled)
+                if package_name is not None:
+                    updates.append("package_name = ?")
+                    params.append(package_name)
+                if client_type is not None:
+                    updates.append("client_type = ?")
+                    params.append(client_type)
+                
+                if updates:
+                    updates.append("updated_at = CURRENT_TIMESTAMP")
+                    query = f"UPDATE sora_app_config SET {', '.join(updates)} WHERE id = 1"
                     await db.execute(query, params)
             
             await db.commit()

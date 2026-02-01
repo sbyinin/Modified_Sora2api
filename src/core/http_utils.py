@@ -20,14 +20,57 @@ IOS_USER_AGENTS = [
 # Sora App UA (iOS Safari)
 SORA_APP_USER_AGENT = IOS_USER_AGENTS[0]
 
-# Sora App 标识头
+# Sora App 标识头 (默认值)
 SORA_APP_PACKAGE_NAME = "com.openai.sora"
 SORA_APP_CLIENT_TYPE = "android"
 
 # 手机 UA 列表 (Sora App)
 MOBILE_USER_AGENTS = IOS_USER_AGENTS
 
-# Sora App 请求头模板
+# Sora App 配置缓存 (运行时从数据库加载)
+_sora_app_config_cache: Dict = {
+    "enabled": True,
+    "package_name": SORA_APP_PACKAGE_NAME,
+    "client_type": SORA_APP_CLIENT_TYPE,
+}
+
+
+def set_sora_app_config(enabled: bool, package_name: str, client_type: str):
+    """Set Sora App headers configuration (called from startup)"""
+    global _sora_app_config_cache
+    _sora_app_config_cache = {
+        "enabled": enabled,
+        "package_name": package_name,
+        "client_type": client_type,
+    }
+
+
+def get_sora_app_headers() -> Dict[str, str]:
+    """Get Sora App headers based on current configuration"""
+    if _sora_app_config_cache["enabled"]:
+        return {
+            "oai-package-name": _sora_app_config_cache["package_name"],
+            "oai-client-type": _sora_app_config_cache["client_type"],
+        }
+    return {}
+
+
+def get_chrome_headers() -> Dict[str, str]:
+    """Get Chrome headers with dynamic Sora App headers"""
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://sora.chatgpt.com",
+        "Referer": "https://sora.chatgpt.com/",
+    }
+    # Add Sora App headers if enabled
+    headers.update(get_sora_app_headers())
+    return headers
+
+
+# Sora App 请求头模板 (静态版本，兼容旧代码)
+# 注意：新代码应使用 get_chrome_headers() 函数
 CHROME_HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "Accept-Encoding": "gzip, deflate, br",
@@ -287,7 +330,7 @@ def build_sora_headers(
         完整的请求头字典
     """
     headers = {
-        **CHROME_HEADERS,
+        **get_chrome_headers(),
         "Authorization": f"Bearer {token}",
         "User-Agent": user_agent or get_random_user_agent(),
         "oai-device-id": device_id or generate_device_id(),
@@ -311,12 +354,13 @@ def build_simple_headers(token: str) -> dict:
     Returns:
         简单请求头字典
     """
-    return {
+    headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
         "Origin": "https://sora.chatgpt.com",
         "Referer": "https://sora.chatgpt.com/",
         "User-Agent": get_random_user_agent(),
-        "oai-package-name": SORA_APP_PACKAGE_NAME,
-        "oai-client-type": SORA_APP_CLIENT_TYPE,
     }
+    # Add Sora App headers if enabled
+    headers.update(get_sora_app_headers())
+    return headers

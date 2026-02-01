@@ -235,6 +235,11 @@ class UpdateDeadTokenDetectionConfigRequest(BaseModel):
     zero_progress_timeout: Optional[float] = None  # Seconds to wait at 0% before considering token dead
     max_retries: Optional[int] = None  # Maximum number of token retries
 
+class UpdateSoraAppConfigRequest(BaseModel):
+    sora_app_headers_enabled: Optional[bool] = None  # Whether to include Sora App headers
+    package_name: Optional[str] = None  # oai-package-name header value
+    client_type: Optional[str] = None  # oai-client-type header value
+
 # Auth endpoints
 @router.post("/api/login", response_model=LoginResponse)
 async def login(request: LoginRequest):
@@ -1618,6 +1623,59 @@ async def update_dead_token_detection_config(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update dead token detection config: {str(e)}")
+
+# Sora App headers config endpoints
+@router.get("/api/sora-app/config")
+async def get_sora_app_config(token: str = Depends(verify_admin_token)):
+    """Get Sora App headers configuration"""
+    try:
+        sora_app_config = await db.get_sora_app_config()
+        return {
+            "success": True,
+            "config": {
+                "sora_app_headers_enabled": sora_app_config.sora_app_headers_enabled,
+                "package_name": sora_app_config.package_name,
+                "client_type": sora_app_config.client_type
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get Sora App config: {str(e)}")
+
+@router.post("/api/sora-app/config")
+async def update_sora_app_config(
+    request: UpdateSoraAppConfigRequest,
+    token: str = Depends(verify_admin_token)
+):
+    """Update Sora App headers configuration"""
+    try:
+        await db.update_sora_app_config(
+            sora_app_headers_enabled=request.sora_app_headers_enabled,
+            package_name=request.package_name,
+            client_type=request.client_type
+        )
+        
+        # Get updated config
+        updated_config = await db.get_sora_app_config()
+        
+        # Update runtime configuration
+        from ..core.http_utils import set_sora_app_config
+        set_sora_app_config(
+            enabled=updated_config.sora_app_headers_enabled,
+            package_name=updated_config.package_name,
+            client_type=updated_config.client_type
+        )
+        
+        return {
+            "success": True,
+            "message": "Sora App configuration updated",
+            "config": {
+                "sora_app_headers_enabled": updated_config.sora_app_headers_enabled,
+                "package_name": updated_config.package_name,
+                "client_type": updated_config.client_type
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update Sora App config: {str(e)}")
 
 # AT auto refresh config endpoints
 @router.get("/api/token-refresh/config")
