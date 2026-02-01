@@ -187,11 +187,27 @@ class SentinelTokenManager:
             self._proxy_manager = ProxyManager(db)
         return self._proxy_manager
     
+    async def _is_browser_alive(self) -> bool:
+        """检查浏览器实例是否仍然有效"""
+        if self._browser is None:
+            return False
+        try:
+            # 尝试获取浏览器的 contexts 来检测是否仍然连接
+            _ = self._browser.contexts
+            return True
+        except Exception:
+            return False
+    
     async def _get_browser(self, proxy_url: Optional[str] = None):
         """获取或创建浏览器实例（复用）"""
         async with self._browser_lock:
             # 如果代理变化，需要重启浏览器
             if self._browser is not None and self._current_proxy != proxy_url:
+                await self._close_browser_internal()
+            
+            # 检查浏览器是否仍然有效
+            if self._browser is not None and not await self._is_browser_alive():
+                print("⚠️ [SentinelManager] Browser connection lost, recreating...")
                 await self._close_browser_internal()
             
             if self._browser is None:
@@ -393,117 +409,127 @@ class SentinelTokenManager:
         self,
         device_id: str,
         proxy_url: Optional[str] = None,
-        flow: str = "sora_2_create_task"
+        flow: str = "sora_2_create_task",
+        _retry: bool = False
     ) -> str:
         """通过 Playwright 浏览器生成 sentinel token
         
         使用 sorai2.fun 域名的 SDK 和路由拦截方式
         """
-        browser = await self._get_browser(proxy_url)
+        try:
+            browser = await self._get_browser(proxy_url)
+        except Exception as e:
+            # 浏览器启动失败，清理并重试一次
+            if not _retry:
+                print(f"⚠️ [SentinelManager] Browser start failed, retrying: {e}")
+                await self._close_browser_internal()
+                return await self._generate_token_via_browser(device_id, proxy_url, flow, _retry=True)
+            raise
         
         # 生成随机指纹
         fingerprint = self._get_random_fingerprint()
-        
-        context = await browser.new_context(
-            viewport=fingerprint['viewport'],
-            user_agent=fingerprint['user_agent'],
-            locale=fingerprint['locale'],
-            timezone_id=fingerprint['timezone'],
-            bypass_csp=True,
-            # 额外隐藏头
-            extra_http_headers={
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-                'Accept-Language': f'{fingerprint["locale"]},{fingerprint["locale"].split("-")[0]};q=0.9,en;q=0.8',
-                'Accept-Encoding': 'gzip, deflate, br, zstd',
-                'Cache-Control': 'no-cache',
-                'Pragma': 'no-cache',
-                'Sec-Ch-Ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
-                'Sec-Ch-Ua-Mobile': '?0',
-                'Sec-Ch-Ua-Platform': f'"{"Windows" if "Win" in fingerprint["platform"] else "macOS"}"',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
-                'Upgrade-Insecure-Requests': '1',
-                'DNT': '1',
-            }
-        )
-        
-        # 注入更多浏览器属性以绕过检测
-        await context.add_init_script('''
-            // 隐藏 webdriver 标志
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            
-            // 伪造 plugins
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => [
-                    { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-                    { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-                    { name: 'Native Client', filename: 'internal-nacl-plugin' }
-                ]
-            });
-            
-            // 伪造 languages
-            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en', 'zh-CN'] });
-            
-            // 伪造 platform
-            Object.defineProperty(navigator, 'platform', { get: () => '""" + fingerprint['platform'] + """' });
-            
-            // 伪造 hardwareConcurrency
-            Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => ''' + str(random.choice([4, 8, 12, 16])) + ''' });
-            
-            // 伪造 deviceMemory
-            Object.defineProperty(navigator, 'deviceMemory', { get: () => ''' + str(random.choice([4, 8, 16, 32])) + ''' });
-            
-            // 隐藏自动化相关属性
-            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
-            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
-            delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
-            
-            // 伪造 chrome 对象
-            window.chrome = {
-                runtime: {},
-                loadTimes: function() {},
-                csi: function() {},
-                app: {}
-            };
-            
-            // 伪造权限 API
-            const originalQuery = window.navigator.permissions.query;
-            window.navigator.permissions.query = (parameters) => (
-                parameters.name === 'notifications' ?
-                    Promise.resolve({ state: Notification.permission }) :
-                    originalQuery(parameters)
-            );
-        ''')
-        
-        # 设置 cookie - 使用 sorai2.fun 域名
-        await context.add_cookies([{
-            'name': 'oai-did',
-            'value': device_id,
-            'domain': 'api.sorai2.fun',
-            'path': '/'
-        }])
-        
-        page = await context.new_page()
-        
-        print(f"🌐 [SentinelManager] Browser fingerprint: UA={fingerprint['user_agent'][:50]}..., Resolution={fingerprint['viewport']}, Locale={fingerprint['locale']}")
-        
-        # 路由拦截 - 使用 sorai2.fun 的 SDK
-        inject_html = '<!DOCTYPE html><html><head><script src="https://api.sorai2.fun/backend-api/sentinel/sdk.js"></script></head><body></body></html>'
-        
-        async def handle_route(route):
-            url = route.request.url
-            if "__sentinel__" in url:
-                await route.fulfill(status=200, content_type="text/html", body=inject_html)
-            elif "/sentinel/" in url or "sorai2.fun" in url:
-                await route.continue_()
-            else:
-                await route.abort()
-        
-        await page.route("**/*", handle_route)
+        context = None
         
         try:
+            context = await browser.new_context(
+                viewport=fingerprint['viewport'],
+                user_agent=fingerprint['user_agent'],
+                locale=fingerprint['locale'],
+                timezone_id=fingerprint['timezone'],
+                bypass_csp=True,
+                # 额外隐藏头
+                extra_http_headers={
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+                    'Accept-Language': f'{fingerprint["locale"]},{fingerprint["locale"].split("-")[0]};q=0.9,en;q=0.8',
+                    'Accept-Encoding': 'gzip, deflate, br, zstd',
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache',
+                    'Sec-Ch-Ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+                    'Sec-Ch-Ua-Mobile': '?0',
+                    'Sec-Ch-Ua-Platform': f'"{"Windows" if "Win" in fingerprint["platform"] else "macOS"}"',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Sec-Fetch-User': '?1',
+                    'Upgrade-Insecure-Requests': '1',
+                    'DNT': '1',
+                }
+            )
+            
+            # 注入更多浏览器属性以绕过检测
+            await context.add_init_script('''
+                // 隐藏 webdriver 标志
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                
+                // 伪造 plugins
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [
+                        { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
+                        { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
+                        { name: 'Native Client', filename: 'internal-nacl-plugin' }
+                    ]
+                });
+                
+                // 伪造 languages
+                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en', 'zh-CN'] });
+                
+                // 伪造 platform
+                Object.defineProperty(navigator, 'platform', { get: () => '""" + fingerprint['platform'] + """' });
+                
+                // 伪造 hardwareConcurrency
+                Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => ''' + str(random.choice([4, 8, 12, 16])) + ''' });
+                
+                // 伪造 deviceMemory
+                Object.defineProperty(navigator, 'deviceMemory', { get: () => ''' + str(random.choice([4, 8, 16, 32])) + ''' });
+                
+                // 隐藏自动化相关属性
+                delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
+                delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
+                delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+                
+                // 伪造 chrome 对象
+                window.chrome = {
+                    runtime: {},
+                    loadTimes: function() {},
+                    csi: function() {},
+                    app: {}
+                };
+                
+                // 伪造权限 API
+                const originalQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (parameters) => (
+                    parameters.name === 'notifications' ?
+                        Promise.resolve({ state: Notification.permission }) :
+                        originalQuery(parameters)
+                );
+            ''')
+            
+            # 设置 cookie - 使用 sorai2.fun 域名
+            await context.add_cookies([{
+                'name': 'oai-did',
+                'value': device_id,
+                'domain': 'api.sorai2.fun',
+                'path': '/'
+            }])
+            
+            page = await context.new_page()
+            
+            print(f"🌐 [SentinelManager] Browser fingerprint: UA={fingerprint['user_agent'][:50]}..., Resolution={fingerprint['viewport']}, Locale={fingerprint['locale']}")
+            
+            # 路由拦截 - 使用 sorai2.fun 的 SDK
+            inject_html = '<!DOCTYPE html><html><head><script src="https://api.sorai2.fun/backend-api/sentinel/sdk.js"></script></head><body></body></html>'
+            
+            async def handle_route(route):
+                url = route.request.url
+                if "__sentinel__" in url:
+                    await route.fulfill(status=200, content_type="text/html", body=inject_html)
+                elif "/sentinel/" in url or "sorai2.fun" in url:
+                    await route.continue_()
+                else:
+                    await route.abort()
+            
+            await page.route("**/*", handle_route)
+            
             # hack 方式加载
             await page.goto("https://pow.local/__sentinel__", wait_until="load", timeout=30000)
             
@@ -529,9 +555,31 @@ class SentinelTokenManager:
                 return token
             else:
                 raise Exception(f"SDK error: {token}")
-                
+        
+        except Exception as e:
+            # 检查是否是浏览器关闭错误 (TargetClosedError)
+            error_msg = str(e).lower()
+            is_browser_closed = (
+                'target' in error_msg and 'closed' in error_msg or
+                'browser' in error_msg and 'closed' in error_msg or
+                'context' in error_msg and 'closed' in error_msg
+            )
+            
+            if is_browser_closed and not _retry:
+                print(f"⚠️ [SentinelManager] Browser closed unexpectedly, recreating and retrying: {e}")
+                # 清理并重试
+                async with self._browser_lock:
+                    await self._close_browser_internal()
+                return await self._generate_token_via_browser(device_id, proxy_url, flow, _retry=True)
+            
+            raise
+        
         finally:
-            await context.close()
+            if context:
+                try:
+                    await context.close()
+                except Exception:
+                    pass
     
     def get_cached_device_id(self) -> Optional[str]:
         """获取缓存的 device_id (oai-did)"""
@@ -583,39 +631,51 @@ class SentinelTokenManager:
         
         # Lambda Only 模式：只通过 Lambda 获取 oai-did，然后用 Playwright 生成 token
         if self.USE_LAMBDA_ONLY:
-            print("🔗 [SentinelManager] Lambda-only mode enabled (Lambda for oai-did, Playwright for token)")
+            # 快速路径：检查缓存
+            if not force_refresh and self._is_token_valid():
+                print("⚡ [SentinelManager] Lambda-only mode: using cached token")
+                return self._cached_token.token
             
-            # 1. 通过 Lambda 获取 oai-did
-            try:
-                device_id = await self._fetch_oai_did_via_lambda()
-                print(f"✅ [SentinelManager] Got oai-did via Lambda: {device_id}")
-            except Exception as e:
-                print(f"⚠️ [SentinelManager] Lambda failed for oai-did, falling back to local: {e}")
-                # 备用：本地获取 oai-did
+            # 加锁排队
+            async with self._lock:
+                # Double-check: 获取锁后再次检查缓存
+                if not force_refresh and self._is_token_valid():
+                    print("⚡ [SentinelManager] Lambda-only mode: using cached token (double-check)")
+                    return self._cached_token.token
+                
+                print("🔗 [SentinelManager] Lambda-only mode: refreshing token...")
+                
+                # 1. 通过 Lambda 获取 oai-did
+                try:
+                    device_id = await self._fetch_oai_did_via_lambda()
+                    print(f"✅ [SentinelManager] Got oai-did via Lambda: {device_id}")
+                except Exception as e:
+                    print(f"⚠️ [SentinelManager] Lambda failed for oai-did, falling back to local: {e}")
+                    # 备用：本地获取 oai-did
+                    proxy_mgr = await self._get_proxy_manager()
+                    proxy_url = await proxy_mgr.get_proxy_url(token_id)
+                    device_id = await self._fetch_oai_did_local(proxy_url)
+                
+                # 2. 通过 Playwright 生成 token（使用 Lambda 获取的 oai-did）
                 proxy_mgr = await self._get_proxy_manager()
                 proxy_url = await proxy_mgr.get_proxy_url(token_id)
-                device_id = await self._fetch_oai_did_local(proxy_url)
-            
-            # 2. 通过 Playwright 生成 token（使用 Lambda 获取的 oai-did）
-            proxy_mgr = await self._get_proxy_manager()
-            proxy_url = await proxy_mgr.get_proxy_url(token_id)
-            
-            token = await self._generate_token_via_browser(
-                device_id=device_id,
-                proxy_url=proxy_url,
-                flow=flow
-            )
-            
-            # 更新缓存
-            self._cached_token = CachedToken(
-                token=token,
-                device_id=device_id,
-                created_at=time.time(),
-                proxy_url=proxy_url
-            )
-            
-            print(f"✅ [SentinelManager] Token generated via Playwright (Lambda Only mode)")
-            return token
+                
+                token = await self._generate_token_via_browser(
+                    device_id=device_id,
+                    proxy_url=proxy_url,
+                    flow=flow
+                )
+                
+                # 更新缓存
+                self._cached_token = CachedToken(
+                    token=token,
+                    device_id=device_id,
+                    created_at=time.time(),
+                    proxy_url=proxy_url
+                )
+                
+                print(f"✅ [SentinelManager] Token cached (TTL: {self.TOKEN_TTL}s, Lambda Only mode)")
+                return token
         
         # 快速路径（无锁）
         if not force_refresh and self._is_token_valid():

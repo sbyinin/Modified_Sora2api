@@ -526,6 +526,21 @@ class SoraClient:
                         sentinel_refreshed = True
                         # 更新 headers 中的 sentinel token
                         headers["openai-sentinel-token"] = sentinel
+                        # 同时更新 device_id (oai-did cookie)
+                        new_device_id = sentinel_token_manager.get_cached_device_id()
+                        if new_device_id:
+                            headers["oai-device-id"] = new_device_id
+                            # 更新 Cookie 中的 oai-did
+                            existing_cookie = headers.get("Cookie", "")
+                            # 移除旧的 oai-did
+                            import re
+                            existing_cookie = re.sub(r'oai-did=[^;]*;?\s*', '', existing_cookie).strip('; ')
+                            oai_did_cookie = f"oai-did={new_device_id}"
+                            if existing_cookie:
+                                headers["Cookie"] = f"{existing_cookie}; {oai_did_cookie}"
+                            else:
+                                headers["Cookie"] = oai_did_cookie
+                        print(f"✅ [SoraClient] Sentinel token 已刷新，重试请求...")
                         attempt += 1
                         continue
                     except Exception as sentinel_error:
