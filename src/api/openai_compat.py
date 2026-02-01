@@ -960,11 +960,15 @@ async def _process_video_generation_v2(video_id: str):
             pass
 
 
-def _build_nf_create_payload(prompt: str, orientation: str, n_frames: int, media_id: Optional[str],
+async def _build_nf_create_payload(prompt: str, orientation: str, n_frames: int, media_id: Optional[str],
                              style_id: Optional[str], model: str, size: str) -> dict:
+    # Translate prompt if needed
+    from ..services.translator import translator
+    translated_prompt = await translator.translate_to_english(prompt)
+    
     payload = {
         "kind": "video",
-        "prompt": prompt,
+        "prompt": translated_prompt,
         "title": None,
         "orientation": orientation,
         "size": size,
@@ -1289,7 +1293,7 @@ async def _lambda_video_generation_stream(prompt: str, image_data: Optional[str]
                     )
 
             n_frames = model_config.get("n_frames", 300)
-            payload = _build_nf_create_payload(
+            payload = await _build_nf_create_payload(
                 prompt=prompt,
                 orientation=model_config.get("orientation", "landscape"),
                 n_frames=n_frames,
@@ -1636,7 +1640,7 @@ async def create_video(
 
                     model_config = MODEL_CONFIG[final_model]
                     n_frames = model_config.get("n_frames", duration * 30)
-                    payload = _build_nf_create_payload(
+                    payload = await _build_nf_create_payload(
                         prompt=prompt,
                         orientation=model_config.get("orientation", orient),
                         n_frames=n_frames,
