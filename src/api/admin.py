@@ -2246,6 +2246,35 @@ async def get_behavior_simulator_stats(token: str = Depends(verify_admin_token))
         raise HTTPException(status_code=500, detail=f"获取行为模拟器统计失败: {str(e)}")
 
 
+@router.get("/api/behavior-simulator/stats/{token_id}")
+async def get_token_simulation_stats(
+    token_id: int,
+    admin_token: str = Depends(verify_admin_token)
+):
+    """获取单个Token的养号统计信息"""
+    try:
+        from ..services.behavior_simulator import behavior_simulator
+        stats = behavior_simulator.get_token_stats(token_id)
+        if stats is None:
+            # Token not tracked yet, return empty stats
+            return {
+                "success": True,
+                "stats": {
+                    "token_id": token_id,
+                    "simulation_count": 0,
+                    "last_simulation": None,
+                    "last_error": None,
+                    "is_simulating": False
+                }
+            }
+        return {
+            "success": True,
+            "stats": stats
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取Token养号统计失败: {str(e)}")
+
+
 @router.post("/api/behavior-simulator/simulate/{token_id}")
 async def simulate_token_behavior(
     token_id: int,

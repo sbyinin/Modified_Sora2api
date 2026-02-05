@@ -111,6 +111,20 @@ class BehaviorSimulator:
             ]
         }
     
+    def get_token_stats(self, token_id: int) -> Optional[dict]:
+        """Get simulation statistics for a specific token"""
+        state = self._token_states.get(token_id)
+        if not state:
+            return None
+        
+        return {
+            "token_id": state.token_id,
+            "simulation_count": state.simulation_count,
+            "last_simulation": datetime.fromtimestamp(state.last_simulation_time).isoformat() if state.last_simulation_time > 0 else None,
+            "last_error": state.last_error,
+            "is_simulating": state.is_simulating
+        }
+    
     async def start(self, db, sora_client):
         """Start the background simulation task"""
         if self._running:

@@ -1802,6 +1802,13 @@ class Database:
                 }
             return {"chat_inflight": 0, "video_inflight": 0}
     
+    async def _token_exists(self, token_id: int) -> bool:
+        """Check if a token exists in the database"""
+        async with self._connect(readonly=True) as db:
+            cursor = await db.execute("SELECT 1 FROM tokens WHERE id = ?", (token_id,))
+            row = await cursor.fetchone()
+            return row is not None
+
     async def increment_image_count(self, token_id: int):
         """Increment image generation count - uses upsert for MySQL"""
         from datetime import date
@@ -1811,6 +1818,10 @@ class Database:
             max_retries = 5
             for attempt in range(max_retries):
                 try:
+                    # Check if token exists first to avoid foreign key constraint error
+                    if not await self._token_exists(token_id):
+                        print(f"[Database] Token {token_id} does not exist, skipping stats update")
+                        return
                     async with self._connect() as db:
                         await db.execute("""
                             INSERT INTO token_stats (token_id, image_count, today_image_count, today_date)
@@ -1823,6 +1834,10 @@ class Database:
                         await db.commit()
                         return
                 except Exception as e:
+                    # Handle foreign key constraint error gracefully
+                    if "foreign key constraint fails" in str(e).lower() or "1452" in str(e):
+                        print(f"[Database] Token {token_id} no longer exists, skipping stats update")
+                        return
                     if self._should_retry_mysql_error(e):
                         if attempt < max_retries - 1:
                             await asyncio.sleep(0.2 * (attempt + 1))
@@ -1850,6 +1865,10 @@ class Database:
             max_retries = 5
             for attempt in range(max_retries):
                 try:
+                    # Check if token exists first to avoid foreign key constraint error
+                    if not await self._token_exists(token_id):
+                        print(f"[Database] Token {token_id} does not exist, skipping stats update")
+                        return
                     async with self._connect() as db:
                         await db.execute("""
                             INSERT INTO token_stats (token_id, video_count, today_video_count, today_date)
@@ -1862,6 +1881,10 @@ class Database:
                         await db.commit()
                         return
                 except Exception as e:
+                    # Handle foreign key constraint error gracefully
+                    if "foreign key constraint fails" in str(e).lower() or "1452" in str(e):
+                        print(f"[Database] Token {token_id} no longer exists, skipping stats update")
+                        return
                     if self._should_retry_mysql_error(e):
                         if attempt < max_retries - 1:
                             await asyncio.sleep(0.2 * (attempt + 1))
@@ -1889,6 +1912,10 @@ class Database:
             max_retries = 5
             for attempt in range(max_retries):
                 try:
+                    # Check if token exists first to avoid foreign key constraint error
+                    if not await self._token_exists(token_id):
+                        print(f"[Database] Token {token_id} does not exist, skipping stats update")
+                        return
                     async with self._connect() as db:
                         await db.execute("""
                             INSERT INTO token_stats (
@@ -1910,6 +1937,10 @@ class Database:
                         await db.commit()
                         return
                 except Exception as e:
+                    # Handle foreign key constraint error gracefully
+                    if "foreign key constraint fails" in str(e).lower() or "1452" in str(e):
+                        print(f"[Database] Token {token_id} no longer exists, skipping stats update")
+                        return
                     if self._should_retry_mysql_error(e):
                         if attempt < max_retries - 1:
                             await asyncio.sleep(0.2 * (attempt + 1))
@@ -1936,6 +1967,10 @@ class Database:
             max_retries = 5
             for attempt in range(max_retries):
                 try:
+                    # Check if token exists first to avoid foreign key constraint error
+                    if not await self._token_exists(token_id):
+                        print(f"[Database] Token {token_id} does not exist, skipping stats update")
+                        return
                     async with self._connect() as db:
                         await db.execute("""
                             INSERT INTO token_stats (token_id, consecutive_error_count)
@@ -1945,6 +1980,10 @@ class Database:
                         await db.commit()
                         return
                 except Exception as e:
+                    # Handle foreign key constraint error gracefully
+                    if "foreign key constraint fails" in str(e).lower() or "1452" in str(e):
+                        print(f"[Database] Token {token_id} no longer exists, skipping stats update")
+                        return
                     if self._should_retry_mysql_error(e):
                         if attempt < max_retries - 1:
                             await asyncio.sleep(0.2 * (attempt + 1))
