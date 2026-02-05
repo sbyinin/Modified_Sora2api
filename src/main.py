@@ -22,6 +22,7 @@ from .services.concurrency_manager import ConcurrencyManager
 from .services.token_cache import get_token_cache
 from .services.watermark_service import watermark_service
 from .services.lambda_manager import lambda_manager
+from .services.behavior_simulator import behavior_simulator
 from .api import routes as api_routes
 from .api import admin as admin_routes
 from .api import public as public_routes
@@ -213,9 +214,17 @@ async def startup_event():
     # Start file cache cleanup task
     await generation_handler.file_cache.start_cleanup_task()
 
+    # Start behavior simulator background task
+    await behavior_simulator.start(db, sora_client)
+    print(f"✓ Behavior simulator started (interval: 5-15 min, tokens_per_round: 3)")
+
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown"""
+    # Stop behavior simulator
+    await behavior_simulator.stop()
+    print("✓ Behavior simulator stopped")
+    
     await generation_handler.file_cache.stop_cleanup_task()
     await generation_handler.file_cache.close()
     await watermark_service.close()

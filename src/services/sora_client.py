@@ -43,6 +43,10 @@ class SoraClient:
         self._sessions: Dict[str, Tuple[AsyncSession, str]] = {}
         # Lambda manager (lazy loaded)
         self._lambda_manager = None
+        # 行为模拟配置
+        self._behavior_simulation_enabled = True  # 是否启用行为模拟
+        self._behavior_like_count = 2  # 点赞数量 (0-5)
+        self._behavior_view_count = 3  # 观看记录数量 (0-5)
 
     async def _get_lambda_manager(self):
         """获取 Lambda manager 实例"""
@@ -659,6 +663,222 @@ class SoraClient:
         if cursor:
             url = f"/project_y/feed?cursor={cursor}&limit={limit}&cut={cut}"
         return await self._make_request("GET", url, token)
+
+    async def submit_viewed(self, token: str, views: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Submit viewed records to Sora API (behavior simulation)
+        
+        Args:
+            token: Access token
+            views: List of view records, each containing:
+                - id: Post ID (e.g., "s_69837b9e53f0819194e199a0ffb708af")
+                - first_view_time: Unix timestamp of first view
+                - exit_view_time: Unix timestamp when user exited
+                - loop_count: Number of times video looped (usually 0)
+                - watch_time: Seconds actually watching video
+                - dwell_time: Total time on post (including pauses)
+                - is_head_cache: null
+                - ranking_session_id: null
+                - source: null
+                - feed_position: null
+        
+        Returns:
+            API response
+        """
+        json_data = {
+            "rich_views": {
+                "views": views
+            }
+        }
+        return await self._make_request("POST", "/project_y/viewed", token, json_data=json_data)
+
+    async def like_post(self, token: str, post_id: str) -> Dict[str, Any]:
+        """Like a post (behavior simulation)
+        
+        Args:
+            token: Access token
+            post_id: Post ID to like (e.g., "s_6984922b139c8191a1f54fcb94ddab05")
+        
+        Returns:
+            API response
+        """
+        json_data = {"kind": "like"}
+        return await self._make_request("POST", f"/project_y/post/{post_id}/like", token, json_data=json_data)
+
+    async def unlike_post(self, token: str, post_id: str) -> Dict[str, Any]:
+        """Unlike a post (behavior simulation)
+        
+        Args:
+            token: Access token
+            post_id: Post ID to unlike
+        
+        Returns:
+            API response
+        """
+        json_data = {"kind": "unlike"}
+        return await self._make_request("POST", f"/project_y/post/{post_id}/like", token, json_data=json_data)
+
+    def set_behavior_simulation(self, enabled: bool = True, like_count: int = 2, view_count: int = 3):
+        """Configure behavior simulation settings
+        
+        Args:
+            enabled: Whether to enable behavior simulation before video generation
+            like_count: Number of posts to like (0-5)
+            view_count: Number of view records to submit (0-5)
+        """
+        self._behavior_simulation_enabled = enabled
+        self._behavior_like_count = max(0, min(5, like_count))
+        self._behavior_view_count = max(0, min(5, view_count))
+        print(f"🔧 [SoraClient] Behavior simulation: enabled={enabled}, like_count={self._behavior_like_count}, view_count={self._behavior_view_count}")
+
+    async def simulate_user_behavior(self, token: str) -> Dict[str, Any]:
+        """Simulate user behavior before creating generation task
+        
+        This method fetches the real public feed from nf2_latest, then uses that real data
+        to submit view records and like posts, simulating normal user activity.
+        
+        Args:
+            token: Access token
+        
+        Returns:
+            Simulation result with stats including real post IDs used
+        """
+        import asyncio
+        
+        if not self._behavior_simulation_enabled:
+            return {"skipped": True, "reason": "behavior simulation disabled"}
+        
+        result = {
+            "feed_fetched": False,
+            "views_submitted": 0,
+            "posts_liked": 0,
+            "viewed_post_ids": [],
+            "liked_post_ids": [],
+            "errors": []
+        }
+        
+        try:
+            # Step 1: Fetch real public feed from nf2_latest
+            print(f"🎭 [BehaviorSim] Fetching real feed from /project_y/feed?limit=8&cut=nf2_latest ...")
+            feed_data = await self.get_public_feed(token, limit=8, cut="nf2_latest")
+            items = feed_data.get("items", [])
+            result["feed_fetched"] = True
+            
+            # Log real post data from feed
+            print(f"🎭 [BehaviorSim] Got {len(items)} real posts from feed:")
+            for i, item in enumerate(items[:5]):  # Show first 5
+                post = item.get("post", {})
+                profile = item.get("profile", {})
+                post_id = post.get("id", "unknown")
+                text = post.get("text", "")[:30] + "..." if len(post.get("text", "")) > 30 else post.get("text", "")
+                username = profile.get("username", "unknown")
+                like_count = post.get("like_count", 0)
+                print(f"   [{i+1}] {post_id} by @{username} - likes:{like_count} - \"{text}\"")
+            
+            if not items:
+                print(f"🎭 [BehaviorSim] No posts in feed, skipping simulation")
+                return result
+            
+            # Step 2: Build and submit view records using real post IDs
+            if self._behavior_view_count > 0:
+                current_time = time.time()
+                views_to_submit = []
+                
+                # Select random real posts for viewing
+                view_count = min(self._behavior_view_count, len(items))
+                view_posts = random.sample(items, view_count)
+                
+                print(f"🎭 [BehaviorSim] Building view records for {view_count} real posts...")
+                
+                for i, item in enumerate(view_posts):
+                    post = item.get("post", {})
+                    post_id = post.get("id")
+                    if not post_id:
+                        continue
+                    
+                    # Get real video duration from post if available
+                    attachments = post.get("attachments", [])
+                    n_frames = 300  # default 10s
+                    if attachments:
+                        n_frames = attachments[0].get("n_frames", 300)
+                    video_duration = n_frames / 30  # 30fps
+                    
+                    # Generate realistic view times based on actual video duration
+                    first_view = current_time - random.uniform(30, 120)  # Started viewing 30-120s ago
+                    # Watch time should be realistic - between 1.5s and actual video duration
+                    max_watch = min(video_duration, 10.0)
+                    watch_time = random.uniform(1.5, max_watch)
+                    dwell_time = watch_time + random.uniform(0.3, 2.0)  # Dwell time slightly longer
+                    exit_time = first_view + dwell_time
+                    
+                    view_record = {
+                        "id": post_id,
+                        "first_view_time": first_view,
+                        "exit_view_time": exit_time,
+                        "loop_count": 0,
+                        "watch_time": watch_time,
+                        "dwell_time": dwell_time,
+                        "is_head_cache": None,
+                        "ranking_session_id": None,
+                        "source": None,
+                        "feed_position": None
+                    }
+                    views_to_submit.append(view_record)
+                    result["viewed_post_ids"].append(post_id)
+                    print(f"   View record: {post_id} watch_time={watch_time:.2f}s dwell_time={dwell_time:.2f}s")
+                
+                if views_to_submit:
+                    try:
+                        print(f"🎭 [BehaviorSim] Submitting {len(views_to_submit)} view records to /project_y/viewed ...")
+                        await self.submit_viewed(token, views_to_submit)
+                        result["views_submitted"] = len(views_to_submit)
+                        print(f"🎭 [BehaviorSim] ✅ View records submitted successfully")
+                    except Exception as e:
+                        error_msg = f"Failed to submit views: {e}"
+                        result["errors"].append(error_msg)
+                        print(f"🎭 [BehaviorSim] ⚠️ {error_msg}")
+            
+            # Step 3: Like real posts
+            if self._behavior_like_count > 0:
+                # Filter out already liked posts
+                unliked_posts = [item for item in items if not item.get("post", {}).get("user_liked", False)]
+                
+                if unliked_posts:
+                    like_count = min(self._behavior_like_count, len(unliked_posts))
+                    like_posts = random.sample(unliked_posts, like_count)
+                    
+                    print(f"🎭 [BehaviorSim] Liking {like_count} real posts...")
+                    
+                    for item in like_posts:
+                        post = item.get("post", {})
+                        profile = item.get("profile", {})
+                        post_id = post.get("id")
+                        if not post_id:
+                            continue
+                        
+                        try:
+                            # Add small random delay between likes (more human-like)
+                            await asyncio.sleep(random.uniform(0.5, 1.5))
+                            username = profile.get("username", "unknown")
+                            print(f"🎭 [BehaviorSim] Liking {post_id} by @{username} ...")
+                            await self.like_post(token, post_id)
+                            result["posts_liked"] += 1
+                            result["liked_post_ids"].append(post_id)
+                            print(f"🎭 [BehaviorSim] ✅ Liked {post_id}")
+                        except Exception as e:
+                            error_msg = f"Failed to like {post_id}: {e}"
+                            result["errors"].append(error_msg)
+                            print(f"🎭 [BehaviorSim] ⚠️ {error_msg}")
+                else:
+                    print(f"🎭 [BehaviorSim] All posts already liked, skipping like step")
+            
+            print(f"🎭 [BehaviorSim] ✅ Completed: views={result['views_submitted']}, likes={result['posts_liked']}")
+            
+        except Exception as e:
+            error_msg = f"Behavior simulation failed: {e}"
+            result["errors"].append(error_msg)
+            print(f"🎭 [BehaviorSim] ❌ {error_msg}")
+        
+        return result
     
     async def upload_image(self, image_data: bytes, token: str, filename: str = "image.png") -> str:
         """Upload image and return media_id
@@ -740,11 +960,11 @@ class SoraClient:
             model: Model to use (sy_8_20251208 for standard, sy_ore for pro)
             size: Video size (small for standard, large for HD)
         """
-        # 预热请求：在创建视频任务前先请求 feed
+        # 行为模拟：在创建视频任务前模拟用户行为（获取feed、提交观看记录、点赞）
         try:
-            await self.get_public_feed(token, limit=10, cut="nf2_top")
+            await self.simulate_user_behavior(token)
         except Exception as e:
-            print(f"⚠️ [SoraClient] Feed 预热请求失败（不影响视频生成）: {e}")
+            print(f"⚠️ [SoraClient] 行为模拟失败（不影响视频生成）: {e}")
         
         # Translate Chinese prompt to English if enabled
         prompt = await translator.translate_to_english(prompt)

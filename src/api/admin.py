@@ -2182,3 +2182,82 @@ async def update_translation_config(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"更新翻译配置失败: {str(e)}")
+
+
+# ========== 行为模拟器 API ==========
+
+class UpdateBehaviorSimulatorConfigRequest(BaseModel):
+    enabled: Optional[bool] = None
+    min_interval: Optional[int] = None  # 最小间隔（秒）
+    max_interval: Optional[int] = None  # 最大间隔（秒）
+    tokens_per_round: Optional[int] = None  # 每轮模拟的token数量
+    prioritize_unsimulated: Optional[bool] = None  # 优先未模拟的token
+    error_cooldown: Optional[int] = None  # 错误冷却时间（秒）
+
+
+@router.get("/api/behavior-simulator/config")
+async def get_behavior_simulator_config(token: str = Depends(verify_admin_token)):
+    """获取行为模拟器配置"""
+    try:
+        from ..services.behavior_simulator import behavior_simulator
+        return {
+            "success": True,
+            "config": behavior_simulator.get_config()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取行为模拟器配置失败: {str(e)}")
+
+
+@router.post("/api/behavior-simulator/config")
+async def update_behavior_simulator_config(
+    request: UpdateBehaviorSimulatorConfigRequest,
+    token: str = Depends(verify_admin_token)
+):
+    """更新行为模拟器配置"""
+    try:
+        from ..services.behavior_simulator import behavior_simulator
+        behavior_simulator.configure(
+            enabled=request.enabled,
+            min_interval=request.min_interval,
+            max_interval=request.max_interval,
+            tokens_per_round=request.tokens_per_round,
+            prioritize_unsimulated=request.prioritize_unsimulated,
+            error_cooldown=request.error_cooldown
+        )
+        return {
+            "success": True,
+            "message": "行为模拟器配置已更新",
+            "config": behavior_simulator.get_config()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"更新行为模拟器配置失败: {str(e)}")
+
+
+@router.get("/api/behavior-simulator/stats")
+async def get_behavior_simulator_stats(token: str = Depends(verify_admin_token)):
+    """获取行为模拟器统计信息"""
+    try:
+        from ..services.behavior_simulator import behavior_simulator
+        return {
+            "success": True,
+            "stats": behavior_simulator.get_stats()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取行为模拟器统计失败: {str(e)}")
+
+
+@router.post("/api/behavior-simulator/simulate/{token_id}")
+async def simulate_token_behavior(
+    token_id: int,
+    admin_token: str = Depends(verify_admin_token)
+):
+    """手动触发指定token的行为模拟"""
+    try:
+        from ..services.behavior_simulator import behavior_simulator
+        result = await behavior_simulator.simulate_token_now(token_id)
+        return {
+            "success": result["success"],
+            "result": result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"模拟失败: {str(e)}")
