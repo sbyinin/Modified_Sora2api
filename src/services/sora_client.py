@@ -245,7 +245,11 @@ class SoraClient:
                 print(f"⚠️ [SoraClient] Lambda request failed, falling back to direct: {e}")
                 # Lambda 失败时回退到直接请求
         
-        proxy_url = await self.proxy_manager.get_proxy_url(token_id)
+        # 对于 /nf/create 请求，使用验证过的代理（确保能访问 datadoghq.com）
+        if endpoint in ("/nf/create", "/nf/create/storyboard"):
+            proxy_url = await self.proxy_manager.get_validated_proxy_url(token_id)
+        else:
+            proxy_url = await self.proxy_manager.get_proxy_url(token_id)
         cf_state = get_cloudflare_state(token_id=token_id, token=token)
 
         # 使用全局 Cloudflare 状态的 user_agent，如果有的话

@@ -386,3 +386,101 @@ class ProxyManager:
     def get_proxy_status(self) -> Dict[str, dict]:
         """Get cached proxy status"""
         return self._proxy_status
+    
+    async def check_proxy_datadoghq_access(self, proxy_url: str, timeout: int = 5) -> bool:
+        """Check if a proxy can access browser-intake-datadoghq.com
+        
+        This is required for Sora API to work properly.
+        
+        Args:
+            proxy_url: Proxy URL to test
+            timeout: Request timeout in seconds
+            
+        Returns:
+            True if proxy can access datadoghq.com, False otherwise
+        """
+        from curl_cffi.requests import AsyncSession
+        
+        if not proxy_url:
+            return True  # No proxy means direct connection
+        
+        test_url = "https://browser-intake-datadoghq.com/"
+        
+        try:
+            async with AsyncSession() as session:
+                response = await session.get(
+                    test_url,
+                    proxy=proxy_url,
+                    timeout=timeout,
+                    allow_redirects=True,
+                    impersonate="chrome120"
+                )
+                # Any response (including 4xx) means the proxy can reach the server
+                return True
+        except asyncio.TimeoutError:
+            print(f"⚠️ [ProxyManager] Proxy {self._mask_proxy(proxy_url)} cannot access datadoghq.com: timeout")
+            return False
+        except Exception as e:
+            print(f"⚠️ [ProxyManager] Proxy {self._mask_proxy(proxy_url)} cannot access datadoghq.com: {e}")
+            return False
+    
+    async def get_validated_proxy_url(self, token_id: Optional[int] = None, max_attempts: int = 10) -> Optional[str]:
+        """Get a proxy URL that has been validated for datadoghq.com access
+        
+        If the current proxy cannot access datadoghq.com, rotate to the next one.
+        
+        Args:
+            token_id: Optional token ID for token-specific proxy
+            max_attempts: Maximum number of proxies to try
+            
+        Returns:
+            A valid proxy URL, or None if no proxy is needed or all proxies failed
+        """
+        config = await self.db.get_proxy_config()
+        
+        if not config.proxy_enabled:
+            return None
+        
+        # If proxy pool is not enabled, use single proxy (no validation rotation)
+        if not config.proxy_pool_enabled:
+            proxy_url = config.proxy_url if config.proxy_url else None
+            if proxy_url:
+                # Test the single proxy
+                if await self.check_proxy_datadoghq_access(proxy_url):
+                    return proxy_url
+                else:
+                    print(f"⚠️ [ProxyManager] Single proxy cannot access datadoghq.com, continuing anyway...")
+                    return proxy_url  # Still return it, let the request fail naturally
+            return None
+        
+        # Proxy pool mode: try multiple proxies
+        async with self._pool_lock:
+            # Reload proxy pool if empty
+            if not self._proxy_pool:
+                self._proxy_pool = self._load_proxy_pool()
+            
+            if not self._proxy_pool:
+                # Fallback to single proxy if pool is empty
+                return config.proxy_url if config.proxy_url else None
+            
+            pool_size = len(self._proxy_pool)
+            attempts = min(max_attempts, pool_size)
+            
+            for _ in range(attempts):
+                # Get current proxy
+                proxy_url = self._proxy_pool[self._pool_index]
+                current_index = self._pool_index
+                
+                # Rotate index for next call
+                self._pool_index = (self._pool_index + 1) % pool_size
+                
+                # Test this proxy
+                if await self.check_proxy_datadoghq_access(proxy_url):
+                    print(f"✅ [ProxyManager] Proxy #{current_index + 1} validated for datadoghq.com access")
+                    return proxy_url
+                else:
+                    print(f"⚠️ [ProxyManager] Proxy #{current_index + 1} failed, trying next...")
+            
+            # All attempts failed, return the last proxy anyway
+            print(f"⚠️ [ProxyManager] All {attempts} proxies failed datadoghq.com check, using current proxy anyway")
+            return self._proxy_pool[self._pool_index]
