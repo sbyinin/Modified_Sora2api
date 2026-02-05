@@ -1311,6 +1311,10 @@ class Database:
                 return Token(**dict(row))
             return None
     
+    async def get_token_by_id(self, token_id: int) -> Optional[Token]:
+        """Get token by ID (alias for get_token)"""
+        return await self.get_token(token_id)
+    
     async def get_token_by_value(self, token: str) -> Optional[Token]:
         """Get token by value"""
         async with self._connect(readonly=True) as db:
