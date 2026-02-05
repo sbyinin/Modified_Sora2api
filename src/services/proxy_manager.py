@@ -292,17 +292,10 @@ class ProxyManager:
             }
         except Exception as e:
             error_msg = str(e)
-            # 简化错误信息
-            if "proxy" in error_msg.lower():
-                return {
-                    "valid": False,
-                    "latency": None,
-                    "error": f"代理连接失败: {error_msg[:100]}"
-                }
             return {
                 "valid": False,
                 "latency": None,
-                "error": error_msg[:100]
+                "error": error_msg
             }
 
     async def test_all_proxies(self, remove_invalid: bool = False) -> dict:

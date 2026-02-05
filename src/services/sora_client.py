@@ -740,6 +740,12 @@ class SoraClient:
             model: Model to use (sy_8_20251208 for standard, sy_ore for pro)
             size: Video size (small for standard, large for HD)
         """
+        # 预热请求：在创建视频任务前先请求 feed
+        try:
+            await self.get_public_feed(token, limit=10, cut="nf2_top")
+        except Exception as e:
+            print(f"⚠️ [SoraClient] Feed 预热请求失败（不影响视频生成）: {e}")
+        
         # Translate Chinese prompt to English if enabled
         prompt = await translator.translate_to_english(prompt)
         
