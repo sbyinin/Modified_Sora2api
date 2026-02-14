@@ -350,6 +350,26 @@ curl -X GET "http://your-server/v1/videos/sora-2-abc123def456" \
 }
 ```
 
+**完成后的响应示例:**
+```json
+{
+  "id": "sora-2-abc123def456",
+  "object": "video",
+  "model": "sora-2",
+  "status": "completed",
+  "progress": 100,
+  "created_at": 1702388400,
+  "completed_at": 1702388460,
+  "seconds": "10",
+  "size": "1280x720",
+  "video_url": "https://example.com/path/to/video.mp4",
+  "metadata": {
+    "generation_id": "gen_abc123",
+    "permalink": "https://sora.chatgpt.com/p/s_abc123"
+  }
+}
+```
+
 **状态值 (new-api-main 兼容):**
 - `queued` - 排队中
 - `pending` - 等待中
@@ -373,6 +393,7 @@ curl -X GET "http://your-server/v1/videos/sora-2-abc123def456" \
 | `expires_at` | integer | 过期时间戳（秒，可选） |
 | `seconds` | string | 视频时长 |
 | `size` | string | 视频分辨率 |
+| `video_url` | string | 视频链接（如有去水印则是去水印后的链接，可选） |
 | `remixed_from_video_id` | string | Remix 来源视频 ID（可选） |
 | `error` | object | 错误信息 `{message, code}`（失败时） |
 | `metadata` | object | 扩展元数据（可选） |

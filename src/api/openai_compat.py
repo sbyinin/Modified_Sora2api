@@ -1851,10 +1851,10 @@ async def get_video(
     api_key: str = Depends(verify_api_key_header)
 ):
     """Get video task status (new-api-main compatible)
-    
+
     Returns the current status of a video generation task.
     Compatible with new-api-main sora2 relay format.
-    
+
     **Response fields (new-api-main compatible):**
     - id: Video task ID
     - object: "video"
@@ -1866,6 +1866,7 @@ async def get_video(
     - expires_at: Unix timestamp when expires (seconds, optional)
     - seconds: Video duration
     - size: Video resolution
+    - video_url: Video URL (watermark-removed if applicable, optional)
     - remixed_from_video_id: Remix source video ID (optional)
     - error: Error details {message, code} (only when status="failed")
     - metadata: Extended metadata (optional)
@@ -1901,6 +1902,10 @@ async def get_video(
         if task_info.get("error"):
             response["error"] = task_info["error"]
 
+        # Add video_url field (returns video URL if available, watermark-removed if applicable)
+        if task_info.get("result_url"):
+            response["video_url"] = task_info["result_url"]
+
         metadata = {}
         if task_info.get("generation_id"):
             metadata["generation_id"] = task_info["generation_id"]
@@ -1908,7 +1913,7 @@ async def get_video(
             metadata["permalink"] = task_info["permalink"]
         if metadata:
             response["metadata"] = metadata
-        
+
         return JSONResponse(content=response)
     
     # Fallback to database
@@ -1970,6 +1975,17 @@ async def get_video(
             "code": "generation_failed"
         }
 
+    # Add video_url field (returns video URL if available, watermark-removed if applicable)
+    if task.result_urls:
+        # result_urls might be JSON string or direct URL
+        try:
+            import json
+            urls = json.loads(task.result_urls)
+            if urls:
+                response["video_url"] = urls[0] if isinstance(urls, list) else urls
+        except:
+            response["video_url"] = task.result_urls
+
     metadata = {}
     if task.generation_id:
         metadata["generation_id"] = task.generation_id
@@ -1977,7 +1993,7 @@ async def get_video(
         metadata["permalink"] = task.permalink
     if metadata:
         response["metadata"] = metadata
-    
+
     return JSONResponse(content=response)
 
 
