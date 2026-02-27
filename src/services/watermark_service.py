@@ -353,8 +353,10 @@ class WatermarkService:
                 else:
                     last_error = data.get('error', '自定义解析服务返回失败')
                     debug_logger.log_error(f"自定义解析失败: {last_error}")
-                    # 服务端返回业务失败，不重试
-                    break
+                    if attempt < max_retries:
+                        wait = attempt * 2
+                        debug_logger.log_info(f"等待 {wait}s 后重试...")
+                        await asyncio.sleep(wait)
 
             except Exception as e:
                 last_error = str(e)
