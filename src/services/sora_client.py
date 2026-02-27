@@ -1202,7 +1202,7 @@ class SoraClient:
         if proxy_url:
             kwargs["proxy"] = proxy_url
 
-        max_retries = 3
+        max_retries = 9
         last_error = None
 
         async with AsyncSession() as session:

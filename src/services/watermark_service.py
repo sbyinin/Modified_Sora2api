@@ -330,7 +330,7 @@ class WatermarkService:
             'url': f'https://sora.chatgpt.com/p/{video_id}'
         }
 
-        max_retries = 3
+        max_retries = 9
         last_error = None
         session = await self._get_session()
 
