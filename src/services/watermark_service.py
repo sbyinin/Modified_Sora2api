@@ -310,55 +310,61 @@ class WatermarkService:
         """自定义解析方式"""
         custom_url = watermark_config.custom_parse_url
         custom_token = watermark_config.custom_parse_token
-        
+
         if not custom_url:
             return {"success": False, "error": "自定义解析服务器地址未配置"}
-        
+
         if not custom_token:
             return {"success": False, "error": "自定义解析服务器访问密钥未配置"}
-        
-        try:
-            from ..core.http_utils import get_random_fingerprint
-            
-            # 构建请求URL
-            api_url = f"{custom_url.rstrip('/')}/parse"
-            
-            headers = {
-                'Authorization': f'Bearer {custom_token}',
-                'Content-Type': 'application/json',
-                'User-Agent': 'Sora2API/1.0'
-            }
-            
-            payload = {
-                'video_id': video_id,
-                'url': f'https://sora.chatgpt.com/p/{video_id}'
-            }
-            
-            debug_logger.log_info(f"自定义解析请求: {api_url}")
-            
-            session = await self._get_session()
-            response = await session.post(
-                api_url,
-                headers=headers,
-                json=payload,
-                timeout=30,
-                impersonate=get_random_fingerprint()
-            )
-            response.raise_for_status()
-            data = response.json()
-            
-            if data.get('success') and data.get('download_link'):
-                debug_logger.log_info("自定义解析成功")
-                return {"success": True, "download_link": data['download_link']}
-            else:
-                error_msg = data.get('error', '自定义解析服务返回失败')
-                debug_logger.log_error(f"自定义解析失败: {error_msg}")
-                return {"success": False, "error": error_msg}
-                
-        except Exception as e:
-            error_msg = f"自定义解析请求失败: {str(e)}"
-            debug_logger.log_error(error_msg)
-            return {"success": False, "error": error_msg}
+
+        from ..core.http_utils import get_random_fingerprint
+
+        api_url = f"{custom_url.rstrip('/')}/parse"
+        headers = {
+            'Authorization': f'Bearer {custom_token}',
+            'Content-Type': 'application/json',
+            'User-Agent': 'Sora2API/1.0'
+        }
+        payload = {
+            'video_id': video_id,
+            'url': f'https://sora.chatgpt.com/p/{video_id}'
+        }
+
+        max_retries = 3
+        last_error = None
+        session = await self._get_session()
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                debug_logger.log_info(f"自定义解析请求 (尝试 {attempt}/{max_retries}): {api_url}")
+                response = await session.post(
+                    api_url,
+                    headers=headers,
+                    json=payload,
+                    timeout=30,
+                    impersonate=get_random_fingerprint()
+                )
+                response.raise_for_status()
+                data = response.json()
+
+                if data.get('success') and data.get('download_link'):
+                    debug_logger.log_info(f"自定义解析成功，尝试次数: {attempt}")
+                    return {"success": True, "download_link": data['download_link']}
+                else:
+                    last_error = data.get('error', '自定义解析服务返回失败')
+                    debug_logger.log_error(f"自定义解析失败: {last_error}")
+                    # 服务端返回业务失败，不重试
+                    break
+
+            except Exception as e:
+                last_error = str(e)
+                debug_logger.log_error(f"自定义解析请求异常 (尝试 {attempt}): {last_error}")
+                if attempt < max_retries:
+                    wait = attempt * 2
+                    debug_logger.log_info(f"等待 {wait}s 后重试...")
+                    await asyncio.sleep(wait)
+
+        return {"success": False, "error": last_error}
 
 
 # 全局实例
