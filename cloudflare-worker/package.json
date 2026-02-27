@@ -1,0 +1,27 @@
+{
+  "name": "sora-api-cloudflare-worker",
+  "version": "1.0.0",
+  "description": "Sora API Cloudflare Worker proxy",
+  "main": "sora-create-task.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:production": "wrangler deploy --env production",
+    "tail": "wrangler tail"
+  },
+  "keywords": [
+    "sora",
+    "cloudflare",
+    "worker",
+    "api",
+    "proxy"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "js-sha3": "^0.9.3"
+  },
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}

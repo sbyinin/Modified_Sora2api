@@ -1,0 +1,14 @@
+name = "sora-create-task"
+main = "sora-create-task.js"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# 环境变量配置
+# 可以通过 Cloudflare Dashboard 或 wrangler secret 命令设置敏感信息
+[vars]
+SORA_BASE_URL = "https://sora.chatgpt.com/backend"
+SENTINEL_BASE_URL = "https://chatgpt.com"
+
+# 使用 wrangler secret put LAMBDA_SHARED_KEY 来设置共享密钥
+# [env.production]
+# vars = { SORA_BASE_URL = "https://sora.chatgpt.com/backend" }

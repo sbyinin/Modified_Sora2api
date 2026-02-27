@@ -62,3 +62,13 @@ sora2api-main/.env
 test_concurrent.py
 openai_sentinel_token.py
 logs.txt
+
+# Claude Code local settings
+.claude/
+
+# Cloudflare Worker
+cloudflare-worker/node_modules/
+cloudflare-worker/.wrangler/
+
+# Node.js
+node_modules/
