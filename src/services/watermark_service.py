@@ -238,9 +238,9 @@ class WatermarkService:
                 response.raise_for_status()
                 data = response.json()
 
-                download_link = data.get("links", {}).get("mp4_wm")
+                download_link = data.get("links", {}).get("mp4")
                 if not download_link:
-                    last_error = f"第三方解析未返回 mp4_wm 链接: {data}"
+                    last_error = f"第三方解析未返回 mp4 链接: {data}"
                     debug_logger.log_error(
                         error_message=last_error,
                         status_code=0,
