@@ -171,17 +171,9 @@ class FileCache:
         debug_logger.log_info(f"Downloading file from: {url}")
 
         try:
-            # Get proxy if available
-            proxy_url = None
-            if self.proxy_manager:
-                proxy_url = await self.proxy_manager.get_proxy_url()
-
             session = await self._get_session()
             async with self._download_semaphore:
-                kwargs = {"timeout": 60}
-                if proxy_url:
-                    kwargs["proxy"] = proxy_url
-                response = await session.get(url, **kwargs)
+                response = await session.get(url, timeout=60)
 
                 if response.status_code != 200:
                     raise Exception(f"Download failed: HTTP {response.status_code}")
