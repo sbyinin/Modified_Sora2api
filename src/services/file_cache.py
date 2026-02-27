@@ -170,28 +170,38 @@ class FileCache:
         # Download file
         debug_logger.log_info(f"Downloading file from: {url}")
 
-        try:
-            session = await self._get_session()
-            async with self._download_semaphore:
-                response = await session.get(url, timeout=60)
+        max_retries = 3
+        last_error = None
+        session = await self._get_session()
 
-                if response.status_code != 200:
-                    raise Exception(f"Download failed: HTTP {response.status_code}")
-                
-                # Save to cache
-                with open(file_path, 'wb') as f:
-                    f.write(response.content)
-                
-                debug_logger.log_info(f"File cached: {filename} ({len(response.content)} bytes)")
-                return filename
-                
-        except Exception as e:
-            debug_logger.log_error(
-                error_message=f"Failed to download file: {str(e)}",
-                status_code=0,
-                response_text=str(e)
-            )
-            raise Exception(f"Failed to cache file: {str(e)}")
+        for attempt in range(1, max_retries + 1):
+            try:
+                async with self._download_semaphore:
+                    response = await session.get(url, timeout=60)
+
+                    if response.status_code != 200:
+                        raise Exception(f"Download failed: HTTP {response.status_code}")
+
+                    # Save to cache
+                    with open(file_path, 'wb') as f:
+                        f.write(response.content)
+
+                    debug_logger.log_info(f"File cached: {filename} ({len(response.content)} bytes)")
+                    return filename
+
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries:
+                    wait = attempt * 2
+                    debug_logger.log_info(f"Download attempt {attempt} failed: {str(e)}, retrying in {wait}s...")
+                    await asyncio.sleep(wait)
+
+        debug_logger.log_error(
+            error_message=f"Failed to download file after {max_retries} attempts: {str(last_error)}",
+            status_code=0,
+            response_text=str(last_error)
+        )
+        raise Exception(f"Failed to cache file after {max_retries} attempts: {str(last_error)}")
     
     def get_cache_path(self, filename: str) -> Path:
         """Get full path to cached file"""
