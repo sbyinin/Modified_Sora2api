@@ -1654,10 +1654,23 @@ class GenerationHandler:
                                                     parse_token=watermark_config.custom_parse_token,
                                                     post_id=post_id
                                                 )
+                                            elif parse_method == "third_party":
+                                                # Use third-party parse server
+                                                if stream:
+                                                    yield self._format_stream_chunk(
+                                                        reasoning_content="Using third-party parse server to get watermark-free URL...",
+                                                        stage="watermark_free",
+                                                        status="processing",
+                                                        details={"permalink": permalink, "parse_method": "third_party"}
+                                                    )
+                                                debug_logger.log_info(f"Using third-party parse server for post_id: {post_id}")
+                                                from .watermark_service import watermark_service
+                                                tp_result = await watermark_service.get_download_link(post_id)
+                                                if not tp_result["success"]:
+                                                    raise Exception(f"Third-party watermark service failed: {tp_result.get('error', 'Unknown error')}")
+                                                watermark_free_url = tp_result["download_link"]
                                             else:
-                                                # Use third-party parse (default fallback)
-                                                watermark_free_url = f"https://oscdn2.dyysy.com/MP4/{post_id}.mp4"
-                                                debug_logger.log_info(f"Using third-party parse server")
+                                                raise Exception(f"Unsupported parse method: {parse_method}")
 
                                         debug_logger.log_info(f"Watermark-free URL: {watermark_free_url}")
 

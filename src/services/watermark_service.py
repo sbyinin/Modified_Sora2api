@@ -217,12 +217,54 @@ class WatermarkService:
         if parse_method == "builtin":
             return await self._get_download_link_builtin(video_id)
         elif parse_method == "third_party":
-            return {"success": False, "error": "第三方解析暂未实现，请使用内置解析"}
+            return await self._get_download_link_third_party(video_id)
         elif parse_method == "custom":
             return await self._get_download_link_custom(video_id, watermark_config)
         else:
             return {"success": False, "error": f"不支持的解析方式: {parse_method}"}
     
+    async def _get_download_link_third_party(self, video_id: str) -> Dict[str, Any]:
+        """第三方解析方式"""
+        api_url = f"https://api.dyysy.com/links20260207/{video_id}"
+
+        max_retries = 9
+        last_error = None
+        session = await self._get_session()
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                debug_logger.log_info(f"第三方解析请求 (尝试 {attempt}/{max_retries}): {api_url}")
+                response = await session.get(api_url, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+
+                download_link = data.get("links", {}).get("mp4_wm")
+                if not download_link:
+                    last_error = f"第三方解析未返回 mp4_wm 链接: {data}"
+                    debug_logger.log_error(
+                        error_message=last_error,
+                        status_code=0,
+                        response_text=str(data)
+                    )
+                else:
+                    debug_logger.log_info(f"第三方解析成功，尝试次数: {attempt}")
+                    return {"success": True, "download_link": download_link}
+
+            except Exception as e:
+                last_error = str(e)
+                debug_logger.log_error(
+                    error_message=f"第三方解析请求异常 (尝试 {attempt}): {last_error}",
+                    status_code=0,
+                    response_text=last_error
+                )
+
+            if attempt < max_retries:
+                wait = attempt * 2
+                debug_logger.log_info(f"等待 {wait}s 后重试...")
+                await asyncio.sleep(wait)
+
+        return {"success": False, "error": last_error}
+
     async def _get_download_link_builtin(self, video_id: str) -> Dict[str, Any]:
         """内置解析方式"""
         # 获取账号
