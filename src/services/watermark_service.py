@@ -231,22 +231,17 @@ class WatermarkService:
         last_error = None
         session = await self._get_session()
 
-        # 读取代理配置
-        proxy_url = None
-        try:
-            proxy_config = await self.db.get_proxy_config()
-            if proxy_config.proxy_enabled and proxy_config.proxy_url:
-                proxy_url = proxy_config.proxy_url
-                debug_logger.log_info(f"第三方解析使用代理: {proxy_url}")
-        except Exception:
-            pass
-
         for attempt in range(1, max_retries + 1):
             try:
                 debug_logger.log_info(f"第三方解析请求 (尝试 {attempt}/{max_retries}): {api_url}")
                 kwargs = {"timeout": 30}
-                if proxy_url:
-                    kwargs["proxy"] = proxy_url
+                try:
+                    proxy_config = await self.db.get_proxy_config()
+                    if proxy_config.proxy_enabled and proxy_config.proxy_url:
+                        kwargs["proxy"] = proxy_config.proxy_url
+                        debug_logger.log_info(f"第三方解析使用代理: {proxy_config.proxy_url}")
+                except Exception:
+                    pass
                 response = await session.get(api_url, **kwargs)
                 response.raise_for_status()
                 data = response.json()
