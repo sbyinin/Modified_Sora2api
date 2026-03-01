@@ -72,3 +72,5 @@ cloudflare-worker/.wrangler/
 
 # Node.js
 node_modules/
+
+.history/
