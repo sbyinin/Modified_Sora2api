@@ -154,6 +154,7 @@ class ImportTokenItem(BaseModel):
     access_token: str  # Access Token (AT)
     session_token: Optional[str] = None  # Session Token (ST)
     refresh_token: Optional[str] = None  # Refresh Token (RT)
+    client_id: Optional[str] = None  # Client ID (optional)
     proxy_url: Optional[str] = None  # Proxy URL (optional)
     remark: Optional[str] = None  # Remark (optional)
     is_active: bool = True  # Active status
@@ -702,6 +703,7 @@ async def import_tokens(request: ImportTokensRequest, token: str = Depends(verif
                     token=import_item.access_token,
                     st=import_item.session_token,
                     rt=import_item.refresh_token,
+                    client_id=import_item.client_id,
                     proxy_url=import_item.proxy_url,
                     remark=import_item.remark,
                     image_enabled=import_item.image_enabled,
@@ -729,6 +731,7 @@ async def import_tokens(request: ImportTokensRequest, token: str = Depends(verif
                     token_value=import_item.access_token,
                     st=import_item.session_token,
                     rt=import_item.refresh_token,
+                    client_id=import_item.client_id,
                     proxy_url=import_item.proxy_url,
                     remark=import_item.remark,
                     update_if_exists=False,
