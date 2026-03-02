@@ -290,7 +290,7 @@ def refresh_token_to_access_token(refresh_token, client_id=None):
     Returns:
         (status_code, response_body)
     """
-    effective_client_id = client_id or "app_LlGpXReQgckcGGUo2JrYvtJK"
+    effective_client_id = client_id or "app_WXrF1LSkiTtfYqiL6XtjygvX"
     
     url = "https://auth.openai.com/oauth/token"
     payload = {

@@ -739,7 +739,7 @@ class TokenManager:
             except Exception as e:
                 debug_logger.log_info(f"[RT_TO_AT] 查询 client_id 失败: {str(e)}")
         if not effective_client_id:
-            effective_client_id = "app_LlGpXReQgckcGGUo2JrYvtJK"
+            effective_client_id = "app_WXrF1LSkiTtfYqiL6XtjygvX"
             client_id_source = "default"
 
         debug_logger.log_info(f"[RT_TO_AT] 开始转换 Refresh Token 为 Access Token...")

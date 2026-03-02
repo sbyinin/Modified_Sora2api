@@ -299,7 +299,7 @@ function buildSoraHeaders(token, userAgent, sentinelToken = null, contentType = 
 }
 
 async function refreshTokenToAccessToken(refreshToken, clientId = null) {
-    const effectiveClientId = clientId || "app_LlGpXReQgckcGGUo2JrYvtJK";
+    const effectiveClientId = clientId || "app_WXrF1LSkiTtfYqiL6XtjygvX";
 
     const url = "https://auth.openai.com/oauth/token";
     const payload = {
