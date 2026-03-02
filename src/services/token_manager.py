@@ -726,13 +726,25 @@ class TokenManager:
         """
         # 清理 refresh_token，去除首尾空白字符
         refresh_token = refresh_token.strip()
-        
-        # Use provided client_id or default
-        effective_client_id = client_id or "app_LlGpXReQgckcGGUo2JrYvtJK"
+
+        # 解析 client_id：传入参数 → DB 查找 → 默认值
+        effective_client_id = client_id
+        client_id_source = "request"
+        if not effective_client_id:
+            try:
+                token_obj = await self.db.get_token_by_rt(refresh_token)
+                if token_obj and token_obj.client_id:
+                    effective_client_id = token_obj.client_id
+                    client_id_source = "token"
+            except Exception as e:
+                debug_logger.log_info(f"[RT_TO_AT] 查询 client_id 失败: {str(e)}")
+        if not effective_client_id:
+            effective_client_id = "app_LlGpXReQgckcGGUo2JrYvtJK"
+            client_id_source = "default"
 
         debug_logger.log_info(f"[RT_TO_AT] 开始转换 Refresh Token 为 Access Token...")
         debug_logger.log_info(f"[RT_TO_AT] RT长度: {len(refresh_token)}, 前20字符: {refresh_token[:20]}...")
-        debug_logger.log_info(f"[RT_TO_AT] 使用 Client ID: {effective_client_id[:20]}...")
+        debug_logger.log_info(f"[RT_TO_AT] 使用 Client ID: {effective_client_id[:20]}...（{client_id_source}）")
         
         # 直接请求（不走 Lambda，避免 Cloudflare 拦截）
         proxy_url = await self.proxy_manager.get_proxy_url()

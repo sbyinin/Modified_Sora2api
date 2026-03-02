@@ -1334,7 +1334,17 @@ class Database:
             if row:
                 return Token(**dict(row))
             return None
-    
+
+    async def get_token_by_rt(self, refresh_token: str) -> Optional[Token]:
+        """Get token by refresh token"""
+        async with self._connect(readonly=True) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM tokens WHERE rt = ?", (refresh_token,))
+            row = await cursor.fetchone()
+            if row:
+                return Token(**dict(row))
+            return None
+
     async def get_active_tokens(self) -> List[Token]:
         """Get all active tokens (enabled, not cooled down, not expired)"""
         async with self._connect(readonly=True) as db:
