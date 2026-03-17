@@ -682,6 +682,21 @@ _VIDEO_TASK_CLEANUP_INTERVAL = 300
 _last_video_task_cleanup = 0.0
 
 
+def _normalize_video_status(status: Optional[str], progress: Optional[float]) -> str:
+    """Normalize task status for user-facing video polling responses."""
+    normalized_status = str(status or "in_progress").lower()
+    try:
+        progress_value = float(progress or 0)
+    except (TypeError, ValueError):
+        progress_value = 0.0
+
+    if normalized_status in {"completed", "failed", "cancelled"}:
+        return normalized_status
+    if progress_value <= 0:
+        return "queued"
+    return "in_progress"
+
+
 def _touch_video_task(task_info: dict, now: Optional[float] = None, ttl: Optional[int] = None) -> None:
     now = now or time.time()
     ttl = ttl if ttl is not None else _VIDEO_TASK_TTL_SECONDS
@@ -718,7 +733,7 @@ async def _process_video_generation_v2(video_id: str):
     db = Database()
     
     try:
-        task_info["status"] = "in_progress"
+        task_info["status"] = "queued"
         _touch_video_task(task_info)
         print(f"[VideoTask] {video_id}: Starting generation...")
         
@@ -793,6 +808,7 @@ async def _process_video_generation_v2(video_id: str):
                 # Validate progress is in valid range (0-100)
                 if progress is not None and 0 <= progress <= 100:
                     task_info["progress"] = progress
+                    task_info["status"] = _normalize_video_status(task_info.get("status"), progress)
                     _touch_video_task(task_info)
                 
                 # Check for result URL in chunk - try multiple patterns
@@ -1704,7 +1720,7 @@ async def create_video(
                             "id": task_id,
                             "object": "video",
                             "model": model,
-                            "status": "in_progress",
+                            "status": "queued",
                             "progress": 0,
                             "created_at": int(start_time),
                             "seconds": str(duration),
@@ -1738,7 +1754,7 @@ async def create_video(
                 token_id=0,  # Will be set by generation handler
                 model=final_model,
                 prompt=prompt,
-                status="in_progress",  # new-api-main uses in_progress
+                status="queued",
                 progress=0.0
             )
             await db.create_task(task)
@@ -1754,7 +1770,7 @@ async def create_video(
                 "image": image_data,
                 "remix_target_id": remix_target_id,
                 "style_id": style_id,
-                "status": "in_progress",  # new-api-main compatible status
+                "status": "queued",
                 "progress": 0,
                 "created_at": created_at,
                 "completed_at": None,
@@ -1768,7 +1784,7 @@ async def create_video(
             # Start background task
             asyncio.create_task(_process_video_generation_v2(video_id))
             
-            # Return immediately with in_progress status (new-api-main compatible)
+            # Return immediately with queued status while progress is still 0
             # IMPORTANT: Must return 200 OK, not 201 Created - new-api checks for 200
             return JSONResponse(
                 status_code=200,
@@ -1776,7 +1792,7 @@ async def create_video(
                     "id": video_id,
                     "object": "video",
                     "model": model,
-                    "status": "in_progress",
+                    "status": "queued",
                     "progress": 0,
                     "created_at": created_at,
                     "seconds": str(duration),
@@ -1883,7 +1899,7 @@ async def get_video(
             "id": task_info["id"],
             "object": "video",
             "model": task_info["model"],
-            "status": task_info["status"],  # Already using new-api-main compatible status
+            "status": _normalize_video_status(task_info.get("status"), task_info.get("progress")),
             "progress": task_info["progress"],
             "created_at": task_info["created_at"],
             "seconds": task_info["seconds"],
@@ -1927,18 +1943,8 @@ async def get_video(
     created_at = int(task.created_at.timestamp()) if task.created_at else int(time.time())
     
     # Map internal status to new-api-main compatible status
-    status = task.status
-    if status == "queued":
-        status = "queued"
-    elif status == "processing":
-        status = "in_progress"
-    elif status == "completed":
-        status = "completed"
-    elif status == "failed":
-        status = "failed"
-    elif status == "cancelled":
-        status = "cancelled"
-    
+    status = _normalize_video_status(task.status, task.progress)
+
     # Extract model info from task
     model = "sora-2"
     if "sora2pro" in task.model or "sora-2-pro" in task.model:

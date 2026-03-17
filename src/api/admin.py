@@ -1618,6 +1618,8 @@ async def update_dead_token_detection_config(
         # Validate values
         if request.zero_progress_timeout is not None and request.zero_progress_timeout < 30:
             raise HTTPException(status_code=400, detail="zero_progress_timeout must be at least 30 seconds")
+        if request.zero_progress_timeout is not None and request.zero_progress_timeout > 3600:
+            raise HTTPException(status_code=400, detail="zero_progress_timeout cannot exceed 3600 seconds")
         if request.max_retries is not None and (request.max_retries < 1 or request.max_retries > 10):
             raise HTTPException(status_code=400, detail="max_retries must be between 1 and 10")
         

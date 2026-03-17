@@ -27,6 +27,21 @@ def set_dependencies(tm: TokenManager, database: Database, gh=None):
     generation_handler = gh
 
 
+def _normalize_task_display_status(status: Optional[str], progress_pct: Optional[float]) -> str:
+    """Normalize task status for user-facing progress queries."""
+    normalized_status = str(status or "processing").lower()
+    try:
+        progress_value = float(progress_pct or 0)
+    except (TypeError, ValueError):
+        progress_value = 0.0
+
+    if normalized_status in {"completed", "failed", "cancelled"}:
+        return normalized_status
+    if progress_value <= 0:
+        return "queued"
+    return "processing"
+
+
 class EnhancePromptRequest(BaseModel):
     prompt: str
     expansion_level: str = "medium"
@@ -632,10 +647,11 @@ async def get_task_progress(
 
         if cached and cached_token_id == token_id:
             progress = cached.get("progress") or 0
+            progress_pct = max(0.0, min(float(progress) / 100.0, 1.0))
             task = {
                 "id": task_id,
-                "status": cached.get("status") or "processing",
-                "progress_pct": max(0.0, min(float(progress) / 100.0, 1.0))
+                "status": _normalize_task_display_status(cached.get("status"), progress_pct),
+                "progress_pct": progress_pct
             }
             if cached.get("permalink"):
                 task["permalink"] = cached.get("permalink")
@@ -648,10 +664,11 @@ async def get_task_progress(
 
         task_data = await db.get_task(task_id)
         if task_data and task_data.token_id == token_id:
+            progress_pct = max(0.0, min(float(task_data.progress or 0) / 100.0, 1.0))
             task = {
                 "id": task_id,
-                "status": task_data.status,
-                "progress_pct": max(0.0, min(float(task_data.progress or 0) / 100.0, 1.0))
+                "status": _normalize_task_display_status(task_data.status, progress_pct),
+                "progress_pct": progress_pct
             }
             if task_data.result_urls:
                 try:

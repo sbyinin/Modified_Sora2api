@@ -32,12 +32,12 @@ class DeadTokenDetectionConfig:
     
     Attributes:
         enabled: Whether dead token detection is enabled
-        zero_progress_timeout: Time in seconds to wait at 0% progress before considering token dead
-                               Counting starts from the FIRST poll, not from task submission
+        zero_progress_timeout: Time in seconds to wait at 0% progress before considering token dead.
+                               Counting starts from the first non-queued poll, not from task submission.
         max_retries: Maximum number of token retries before giving up
     """
     enabled: bool = True
-    zero_progress_timeout: float = 60.0  # 60 seconds at 0% progress after first poll = dead token
+    zero_progress_timeout: float = 60.0  # 60 seconds at 0% after leaving queued/pending = dead token
     max_retries: int = 3  # Maximum retries with different tokens
 
 
@@ -879,20 +879,21 @@ class GenerationHandler:
             
             # Save task to database (skip duplicate task creation if db_task_id differs)
             task_record_id = db_task_id or task_id
+            initial_task_status = "queued" if is_video else "processing"
             if task_record_id == task_id:
                 task = Task(
                     task_id=task_id,
                     token_id=token_obj.id,
                     model=model,
                     prompt=prompt,
-                    status="processing",
+                    status=initial_task_status,
                     progress=0.0
                 )
                 await self.db.create_task(task)
             else:
-                # Ensure user-facing task is marked as processing
+                # Ensure user-facing task uses the same initial status as the upstream task state
                 try:
-                    await self.db.update_task(task_record_id, "processing", 0.0)
+                    await self.db.update_task(task_record_id, initial_task_status, 0.0)
                 except Exception as update_error:
                     debug_logger.log_info(
                         f"Failed to update task status for {task_record_id}: {update_error}"
@@ -1188,10 +1189,10 @@ class GenerationHandler:
         
         # Dead token detection variables
         dead_token_config = get_dead_token_config()
-        zero_progress_start_time = None  # Will be set on first poll, not from start
+        zero_progress_start_time = None  # Starts after task leaves queued/pending and still stays at 0%
         progress_ever_increased = False  # Track if progress ever went above 0%
-        first_poll_done = False  # Track if we've done the first poll
         missing_task_start_time = None  # Track when task goes missing from pending/drafts
+        timeout_bypass_logged = False  # Avoid logging the same timeout bypass on every poll
         
         # If db_task_id is not provided, use task_id for all DB/cache writes
         if db_task_id is None:
@@ -1208,52 +1209,60 @@ class GenerationHandler:
             # Check if timeout exceeded
             elapsed_time = time.time() - start_time
             if elapsed_time > timeout:
-                debug_logger.log_error(
-                    error_message=f"Task timeout: {elapsed_time:.1f}s > {timeout}s",
-                    status_code=408,
-                    response_text=f"Task {task_id} timed out after {elapsed_time:.1f} seconds"
-                )
-                # Release lock if this is an image generation task
-                if not is_video and token_id:
-                    await self.load_balancer.token_lock.release_lock(token_id)
-                    debug_logger.log_info(f"Released lock for token {token_id} due to timeout")
-                    # Release concurrency slot for image generation
-                    if self.concurrency_manager:
-                        await self.concurrency_manager.release_image(token_id)
+                if is_video and progress_ever_increased:
+                    if not timeout_bypass_logged:
+                        debug_logger.log_info(
+                            f"Task {task_id} exceeded timeout ({elapsed_time:.1f}s > {timeout}s) "
+                            f"but progress was observed earlier; continuing to wait"
+                        )
+                        timeout_bypass_logged = True
+                else:
+                    debug_logger.log_error(
+                        error_message=f"Task timeout: {elapsed_time:.1f}s > {timeout}s",
+                        status_code=408,
+                        response_text=f"Task {task_id} timed out after {elapsed_time:.1f} seconds"
+                    )
+                    # Release lock if this is an image generation task
+                    if not is_video and token_id:
+                        await self.load_balancer.token_lock.release_lock(token_id)
+                        debug_logger.log_info(f"Released lock for token {token_id} due to timeout")
+                        # Release concurrency slot for image generation
+                        if self.concurrency_manager:
+                            await self.concurrency_manager.release_image(token_id)
+                            debug_logger.log_info(f"Released concurrency slot for token {token_id} due to timeout")
+
+                    # Release concurrency slot for video generation
+                    if is_video and token_id and self.concurrency_manager and release_video_slot:
+                        await self.concurrency_manager.release_video(token_id)
                         debug_logger.log_info(f"Released concurrency slot for token {token_id} due to timeout")
 
-                # Release concurrency slot for video generation
-                if is_video and token_id and self.concurrency_manager and release_video_slot:
-                    await self.concurrency_manager.release_video(token_id)
-                    debug_logger.log_info(f"Released concurrency slot for token {token_id} due to timeout")
-
-                await self.db.update_task(db_task_id, "failed", 0, error_message=f"Generation timeout after {elapsed_time:.1f} seconds")
-                try:
-                    cache_extra = {"token_id": token_id} if token_id is not None else {}
-                    cache_extra["error_message"] = f"Generation timeout after {elapsed_time:.1f} seconds"
-                    await redis_mgr.cache_task_progress(
+                    await self.db.update_task(db_task_id, "failed", 0, error_message=f"Generation timeout after {elapsed_time:.1f} seconds")
+                    try:
+                        cache_extra = {"token_id": token_id} if token_id is not None else {}
+                        cache_extra["error_message"] = f"Generation timeout after {elapsed_time:.1f} seconds"
+                        await redis_mgr.cache_task_progress(
+                            db_task_id,
+                            0,
+                            "failed",
+                            extra_data=cache_extra
+                        )
+                    except Exception as cache_error:
+                        debug_logger.log_info(
+                            f"Failed to cache timeout for {db_task_id}: {cache_error}"
+                        )
+                    await self.db.update_request_log_by_task_id(
                         db_task_id,
-                        0,
-                        "failed",
-                        extra_data=cache_extra
-                    )
-                except Exception as cache_error:
-                    debug_logger.log_info(
-                        f"Failed to cache timeout for {db_task_id}: {cache_error}"
-                    )
-                await self.db.update_request_log_by_task_id(
-                    db_task_id,
-                    response_body=json.dumps(
-                        build_error_detail(
-                            Exception(f"Generation timeout after {elapsed_time:.1f} seconds"),
-                            source_hint="timeout"
+                        response_body=json.dumps(
+                            build_error_detail(
+                                Exception(f"Generation timeout after {elapsed_time:.1f} seconds"),
+                                source_hint="timeout"
+                            ),
+                            ensure_ascii=False
                         ),
-                        ensure_ascii=False
-                    ),
-                    status_code=408,
-                    duration=elapsed_time
-                )
-                raise Exception(f"Upstream API timeout: Generation exceeded {timeout} seconds limit")
+                        status_code=408,
+                        duration=elapsed_time
+                    )
+                    raise Exception(f"Upstream API timeout: Generation exceeded {timeout} seconds limit")
 
             # Get adaptive polling interval for video, or use base interval for image
             if is_video and adaptive_poller:
@@ -1289,7 +1298,11 @@ class GenerationHandler:
                                 progress_pct = int(progress_pct * 100)
 
                             status = task.get("status", "processing")
-                            
+                            normalized_status = str(status).lower()
+                            display_status = status
+                            if not progress_ever_increased and progress_pct <= 0 and normalized_status not in {"failed", "completed", "cancelled"}:
+                                display_status = "queued"
+
                             # Handle failed status from Sora API
                             if status == "failed":
                                 error_msg = task.get("error_message", "Video generation failed")
@@ -1315,7 +1328,7 @@ class GenerationHandler:
                                 await redis_mgr.cache_task_progress(
                                     db_task_id,
                                     progress_pct,
-                                    status,
+                                    display_status,
                                     extra_data=cache_extra
                                 )
                             except Exception as cache_error:
@@ -1325,11 +1338,15 @@ class GenerationHandler:
 
                             if abs(progress_pct - last_db_progress) >= db_update_threshold:
                                 try:
-                                    await self.db.update_task(db_task_id, "processing", progress_pct)
+                                    await self.db.update_task(
+                                        db_task_id,
+                                        "queued" if display_status == "queued" else "processing",
+                                        progress_pct
+                                    )
                                     await self._log_request_progress(
                                         db_task_id,
                                         progress_pct,
-                                        status,
+                                        display_status,
                                         snapshot=task,
                                         stage="pending_v1" if use_pending_v1 else "pending_v2"
                                     )
@@ -1338,24 +1355,22 @@ class GenerationHandler:
                                     debug_logger.log_info(
                                         f"Failed to update task progress for {db_task_id}: {update_error}"
                                     )
-                            
+
                             # Record progress for adaptive polling (stall detection)
                             # Requirements: 1.5 - detect stall when no progress for 2 consecutive polls
                             if adaptive_poller:
                                 adaptive_poller.record_progress(progress_pct)
-                            
+
                             # Dead token detection: check if progress is stuck at 0%
                             if dead_token_config.enabled and token_id:
-                                # Start counting from first poll, not from task submission
-                                if not first_poll_done:
-                                    first_poll_done = True
-                                    zero_progress_start_time = time.time()
-                                
                                 if progress_pct > 0:
-                                    # Progress increased, this token is not dead
                                     progress_ever_increased = True
-                                elif not progress_ever_increased and zero_progress_start_time is not None:
-                                    # Progress is still at 0%, check timeout
+                                    zero_progress_start_time = None
+                                elif not progress_ever_increased and normalized_status in {"queued", "pending"}:
+                                    zero_progress_start_time = None
+                                elif not progress_ever_increased:
+                                    if zero_progress_start_time is None:
+                                        zero_progress_start_time = time.time()
                                     zero_progress_duration = time.time() - zero_progress_start_time
                                     if zero_progress_duration >= dead_token_config.zero_progress_timeout:
                                         debug_logger.log_info(
@@ -1379,20 +1394,28 @@ class GenerationHandler:
                             current_time = time.time()
                             progress_changed = progress_pct > last_progress
                             time_elapsed = current_time - last_status_output_time >= video_status_interval
-                            
+
                             if stream and (progress_changed or time_elapsed):
                                 last_status_output_time = current_time
                                 last_progress = progress_pct
                                 # Include adaptive polling info in debug log
                                 interval_info = f", next_interval={adaptive_poller.get_interval(progress_pct)}s" if adaptive_poller else ""
-                                debug_logger.log_info(f"Task {task_id} progress: {progress_pct}% (status: {status}{interval_info})")
-                                yield self._format_stream_chunk(
-                                    reasoning_content=f"Video generation progress: {progress_pct}%",
-                                    stage="generation",
-                                    status="processing",
-                                    progress=progress_pct,
-                                    details={"task_status": status}
-                                )
+                                debug_logger.log_info(f"Task {task_id} progress: {progress_pct}% (status: {display_status}{interval_info})")
+                                if display_status == "queued":
+                                    yield self._format_stream_chunk(
+                                        reasoning_content="Video task is queued and waiting for progress...",
+                                        stage="generation",
+                                        status="queued",
+                                        details={"task_status": "queued", "upstream_task_status": status}
+                                    )
+                                else:
+                                    yield self._format_stream_chunk(
+                                        reasoning_content=f"Video generation progress: {progress_pct}%",
+                                        stage="generation",
+                                        status="processing",
+                                        progress=progress_pct,
+                                        details={"task_status": display_status, "upstream_task_status": status}
+                                    )
                             break
 
                     # If task not found in pending tasks, it's completed - fetch from drafts
@@ -1850,7 +1873,7 @@ class GenerationHandler:
                         # Check if task is missing from both pending and drafts (dead token detection)
                         if not task_found_in_drafts and not draft_pending:
                             # Task not found in pending (checked above) and not in drafts
-                            if dead_token_config.enabled and token_id:
+                            if dead_token_config.enabled and token_id and not progress_ever_increased:
                                 if missing_task_start_time is None:
                                     missing_task_start_time = time.time()
                                     debug_logger.log_info(
