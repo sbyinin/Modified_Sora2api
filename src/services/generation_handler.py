@@ -77,9 +77,9 @@ class PollingConfig:
         stall_multiplier: Multiplier applied to interval when stall is detected (default: 2.0)
         max_interval: Maximum polling interval cap (default: 60.0s)
     """
-    low_progress_interval: float = 20.0  # progress < 30%
-    mid_progress_interval: float = 15.0  # 30% <= progress < 70%
-    high_progress_interval: float = 10.0  # progress >= 70%
+    low_progress_interval: float = 40.0  # progress < 30%
+    mid_progress_interval: float = 40.0  # 30% <= progress < 70%
+    high_progress_interval: float = 40.0  # progress >= 70%
     stall_threshold: int = 2             # consecutive polls with no change
     stall_multiplier: float = 2.0        # interval increase when stalled
     max_interval: float = 60.0           # maximum polling interval
