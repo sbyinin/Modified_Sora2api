@@ -1,18 +1,20 @@
 """Load balancing module"""
 import asyncio
-from typing import Optional, List
+import random
 from datetime import datetime
-from ..core.models import Token
+from typing import List, Optional
+
 from ..core.config import config
-from .token_manager import TokenManager
-from .token_lock import TokenLock
-from .concurrency_manager import ConcurrencyManager
 from ..core.logger import debug_logger
+from ..core.models import Token
+from .concurrency_manager import ConcurrencyManager
+from .token_lock import TokenLock
+from .token_manager import TokenManager
 
 
 class LoadBalancer:
-    """Token load balancer with round-robin selection and image generation lock
-    
+    """Token load balancer with call-logic-aware selection and image generation lock
+
     高并发优化：
     - 自动刷新检查移到后台任务，不阻塞请求
     - 减少不必要的日志输出
@@ -33,7 +35,7 @@ class LoadBalancer:
         self._rr_indices = {
             "image": 0,
             "video": 0,
-            "default": 0
+            "default": 0,
         }
 
     async def _select_round_robin(self, tokens: List[Token], key: str) -> Optional[Token]:
@@ -48,18 +50,25 @@ class LoadBalancer:
             self._rr_indices[key] = (index + 1) % len(ordered)
         return token
 
+    async def _select_by_call_logic(self, tokens: List[Token], key: str) -> Optional[Token]:
+        if not tokens:
+            return None
+        if config.call_logic_mode == "polling":
+            return await self._select_round_robin(tokens, key)
+        return random.choice(tokens)
+
     async def _background_refresh_check(self):
         """后台检查并刷新即将过期的 Token"""
         if not config.at_auto_refresh_enabled:
             return
-        
+
         now = datetime.now()
         # 限制检查频率
         if self._last_refresh_check and (now - self._last_refresh_check).total_seconds() < self._refresh_check_interval:
             return
-        
+
         self._last_refresh_check = now
-        
+
         try:
             all_tokens = await self.token_manager.get_all_tokens()
             for token in all_tokens:
@@ -72,14 +81,21 @@ class LoadBalancer:
         except Exception as e:
             debug_logger.log_info(f"[LOAD_BALANCER] 后台刷新检查失败: {e}")
 
-    async def select_token(self, for_image_generation: bool = False, for_video_generation: bool = False, excluded_token_ids: set = None) -> Optional[Token]:
+    async def select_token(
+        self,
+        for_image_generation: bool = False,
+        for_video_generation: bool = False,
+        excluded_token_ids: Optional[set] = None,
+        require_pro: bool = False,
+    ) -> Optional[Token]:
         """
-        Select a token using round-robin load balancing
+        Select a token using call-logic-aware load balancing.
 
         Args:
             for_image_generation: If True, only select tokens that are not locked for image generation and have image_enabled=True
             for_video_generation: If True, filter out tokens with Sora2 quota exhausted (sora2_cooldown_until not expired), tokens that don't support Sora2, and tokens with video_enabled=False
             excluded_token_ids: Set of token IDs to exclude from selection (e.g., dead tokens)
+            require_pro: If True, only select tokens with ChatGPT Pro subscription (plan_type="chatgpt_pro")
 
         Returns:
             Selected token or None if no available tokens
@@ -91,10 +107,14 @@ class LoadBalancer:
 
         excluded_token_ids = excluded_token_ids or set()
         active_tokens = await self.token_manager.get_active_tokens()
-        
+
         # Filter out excluded tokens
         if excluded_token_ids:
             active_tokens = [t for t in active_tokens if t.id not in excluded_token_ids]
+
+        # Filter for Pro tokens if required
+        if require_pro:
+            active_tokens = [t for t in active_tokens if t.plan_type == "chatgpt_pro"]
 
         if not active_tokens:
             return None
@@ -103,8 +123,7 @@ class LoadBalancer:
         if for_video_generation:
             now = datetime.now()
             available_tokens = []
-            refresh_tasks = []
-            
+
             for token in active_tokens:
                 # Skip tokens that don't have video enabled
                 if not token.video_enabled:
@@ -116,10 +135,9 @@ class LoadBalancer:
 
                 # Check if Sora2 cooldown has expired - 异步刷新，不阻塞
                 if token.sora2_cooldown_until and token.sora2_cooldown_until <= now:
-                    # 创建刷新任务但不等待
-                    refresh_tasks.append(asyncio.create_task(
+                    asyncio.create_task(
                         self.token_manager.refresh_sora2_remaining_if_cooldown_expired(token.id)
-                    ))
+                    )
                     # 暂时跳过这个 token，下次请求时会使用刷新后的数据
                     continue
 
@@ -151,18 +169,18 @@ class LoadBalancer:
             if not available_tokens:
                 return None
 
-            return await self._select_round_robin(available_tokens, "image")
-        else:
-            # For video generation, check concurrency limit
-            if for_video_generation and self.concurrency_manager:
-                available_tokens = []
-                for token in active_tokens:
-                    if await self.concurrency_manager.can_use_video(token.id):
-                        available_tokens.append(token)
-                if not available_tokens:
-                    return None
-                return await self._select_round_robin(available_tokens, "video")
-            else:
-                # For video generation without concurrency manager, no additional filtering
-                key = "video" if for_video_generation else "default"
-                return await self._select_round_robin(active_tokens, key)
+            return await self._select_by_call_logic(available_tokens, "image")
+
+        # For video generation, check concurrency limit
+        if for_video_generation and self.concurrency_manager:
+            available_tokens = []
+            for token in active_tokens:
+                if await self.concurrency_manager.can_use_video(token.id):
+                    available_tokens.append(token)
+            if not available_tokens:
+                return None
+            return await self._select_by_call_logic(available_tokens, "video")
+
+        # For video generation without concurrency manager, no additional filtering
+        key = "video" if for_video_generation else "default"
+        return await self._select_by_call_logic(active_tokens, key)

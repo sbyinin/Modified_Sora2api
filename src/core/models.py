@@ -113,6 +113,8 @@ class ProxyConfig(BaseModel):
     proxy_enabled: bool  # Read from database, initialized from setting.toml on first startup
     proxy_url: Optional[str] = None  # Read from database, initialized from setting.toml on first startup
     proxy_pool_enabled: bool = False  # Enable proxy pool rotation from data/proxy.txt
+    image_upload_proxy_enabled: bool = False
+    image_upload_proxy_url: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -123,6 +125,7 @@ class WatermarkFreeConfig(BaseModel):
     parse_method: str  # Read from database, initialized from setting.toml on first startup
     custom_parse_url: Optional[str] = None  # Read from database, initialized from setting.toml on first startup
     custom_parse_token: Optional[str] = None  # Read from database, initialized from setting.toml on first startup
+    fallback_on_failure: bool = True
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -147,6 +150,35 @@ class TokenRefreshConfig(BaseModel):
     """Token refresh configuration"""
     id: int = 1
     at_auto_refresh_enabled: bool  # Read from database, initialized from setting.toml on first startup
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+class CallLogicConfig(BaseModel):
+    """Call logic configuration"""
+    id: int = 1
+    call_mode: str = "default"
+    polling_mode_enabled: bool = False
+    poll_interval: float = 2.5
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+class PowProxyConfig(BaseModel):
+    """POW proxy configuration"""
+    id: int = 1
+    pow_proxy_enabled: bool = False
+    pow_proxy_url: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+class PowServiceConfig(BaseModel):
+    """POW service configuration"""
+    id: int = 1
+    mode: str = "local"
+    use_token_for_pow: bool = False
+    server_url: Optional[str] = None
+    api_key: Optional[str] = None
+    proxy_enabled: bool = False
+    proxy_url: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

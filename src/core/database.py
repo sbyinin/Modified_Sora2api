@@ -6,7 +6,28 @@ from datetime import datetime
 from typing import Optional, List, Dict
 from pathlib import Path
 from contextlib import asynccontextmanager
-from .models import Token, TokenStats, Task, RequestLog, AdminConfig, ProxyConfig, WatermarkFreeConfig, CacheConfig, GenerationConfig, TokenRefreshConfig, CloudflareSolverConfig, LambdaConfig, TranslationConfig, SoraAppConfig, Character, WebDAVConfig, VideoRecord, UploadLog
+from .models import (
+    Token,
+    TokenStats,
+    Task,
+    RequestLog,
+    AdminConfig,
+    ProxyConfig,
+    WatermarkFreeConfig,
+    CacheConfig,
+    GenerationConfig,
+    TokenRefreshConfig,
+    CallLogicConfig,
+    PowServiceConfig,
+    CloudflareSolverConfig,
+    LambdaConfig,
+    TranslationConfig,
+    SoraAppConfig,
+    Character,
+    WebDAVConfig,
+    VideoRecord,
+    UploadLog,
+)
 from .db_pool import get_db_connection, get_pool
 from .config import config
 
@@ -468,19 +489,32 @@ class Database:
             proxy_enabled = False
             proxy_url = None
             proxy_pool_enabled = False
+            image_upload_proxy_enabled = False
+            image_upload_proxy_url = None
 
             if config_dict:
                 proxy_config = config_dict.get("proxy", {})
                 proxy_enabled = proxy_config.get("proxy_enabled", False)
                 proxy_url = proxy_config.get("proxy_url", "")
                 proxy_pool_enabled = proxy_config.get("proxy_pool_enabled", False)
+                image_upload_proxy_enabled = proxy_config.get("image_upload_proxy_enabled", False)
+                image_upload_proxy_url = proxy_config.get("image_upload_proxy_url", "")
                 # Convert empty string to None
                 proxy_url = proxy_url if proxy_url else None
+                image_upload_proxy_url = image_upload_proxy_url if image_upload_proxy_url else None
 
             await db.execute("""
-                INSERT INTO proxy_config (id, proxy_enabled, proxy_url, proxy_pool_enabled)
-                VALUES (1, ?, ?, ?)
-            """, (proxy_enabled, proxy_url, proxy_pool_enabled))
+                INSERT INTO proxy_config (
+                    id, proxy_enabled, proxy_url, proxy_pool_enabled, image_upload_proxy_enabled, image_upload_proxy_url
+                )
+                VALUES (1, ?, ?, ?, ?, ?)
+            """, (
+                proxy_enabled,
+                proxy_url,
+                proxy_pool_enabled,
+                image_upload_proxy_enabled,
+                image_upload_proxy_url,
+            ))
 
         # Ensure watermark_free_config has a row
         cursor = await db.execute("SELECT COUNT(*) FROM watermark_free_config")
@@ -491,6 +525,7 @@ class Database:
             parse_method = "builtin"
             custom_parse_url = None
             custom_parse_token = None
+            fallback_on_failure = True
 
             if config_dict:
                 watermark_config = config_dict.get("watermark_free", {})
@@ -498,15 +533,25 @@ class Database:
                 parse_method = watermark_config.get("parse_method", "builtin")
                 custom_parse_url = watermark_config.get("custom_parse_url", "")
                 custom_parse_token = watermark_config.get("custom_parse_token", "")
+                fallback_on_failure = watermark_config.get("fallback_on_failure", True)
 
                 # Convert empty strings to None
                 custom_parse_url = custom_parse_url if custom_parse_url else None
                 custom_parse_token = custom_parse_token if custom_parse_token else None
 
             await db.execute("""
-                INSERT INTO watermark_free_config (id, watermark_free_enabled, parse_method, custom_parse_url, custom_parse_token)
-                VALUES (1, ?, ?, ?, ?)
-            """, (watermark_free_enabled, parse_method, custom_parse_url, custom_parse_token))
+                INSERT INTO watermark_free_config (
+                    id, watermark_free_enabled, parse_method, custom_parse_url,
+                    custom_parse_token, fallback_on_failure
+                )
+                VALUES (1, ?, ?, ?, ?, ?)
+            """, (
+                watermark_free_enabled,
+                parse_method,
+                custom_parse_url,
+                custom_parse_token,
+                fallback_on_failure,
+            ))
 
         # Ensure cache_config has a row
         cursor = await db.execute("SELECT COUNT(*) FROM cache_config")
@@ -563,6 +608,66 @@ class Database:
                 INSERT INTO token_refresh_config (id, at_auto_refresh_enabled)
                 VALUES (1, ?)
             """, (at_auto_refresh_enabled,))
+
+        # Ensure call_logic_config has a row
+        if await self._table_exists(db, "call_logic_config"):
+            cursor = await db.execute("SELECT COUNT(*) FROM call_logic_config")
+            count = await cursor.fetchone()
+            if self._get_count_value(count) == 0:
+                call_mode = "default"
+                poll_interval = 2.5
+
+                if config_dict:
+                    call_logic_config = config_dict.get("call_logic", {})
+                    call_mode = call_logic_config.get("call_mode", "default")
+                    if call_mode not in ("default", "polling"):
+                        call_mode = "polling" if call_logic_config.get("polling_mode_enabled", False) else "default"
+                    poll_interval = config_dict.get("sora", {}).get("poll_interval", 2.5)
+                    if "poll_interval" in call_logic_config:
+                        poll_interval = call_logic_config.get("poll_interval", poll_interval)
+
+                try:
+                    poll_interval = float(poll_interval)
+                except (TypeError, ValueError):
+                    poll_interval = 2.5
+                if poll_interval <= 0:
+                    poll_interval = 2.5
+
+                await db.execute("""
+                    INSERT INTO call_logic_config (id, call_mode, polling_mode_enabled, poll_interval)
+                    VALUES (1, ?, ?, ?)
+                """, (call_mode, call_mode == "polling", poll_interval))
+
+        # Ensure pow_service_config has a row
+        if await self._table_exists(db, "pow_service_config"):
+            cursor = await db.execute("SELECT COUNT(*) FROM pow_service_config")
+            count = await cursor.fetchone()
+            if self._get_count_value(count) == 0:
+                mode = "local"
+                use_token_for_pow = False
+                server_url = None
+                api_key = None
+                proxy_enabled = False
+                proxy_url = None
+
+                if config_dict:
+                    pow_service_config = config_dict.get("pow_service", {})
+                    mode = pow_service_config.get("mode", "local")
+                    use_token_for_pow = pow_service_config.get("use_token_for_pow", False)
+                    server_url = pow_service_config.get("server_url", "")
+                    api_key = pow_service_config.get("api_key", "")
+                    proxy_enabled = pow_service_config.get("proxy_enabled", False)
+                    proxy_url = pow_service_config.get("proxy_url", "")
+                    server_url = server_url if server_url else None
+                    api_key = api_key if api_key else None
+                    proxy_url = proxy_url if proxy_url else None
+
+                await db.execute("""
+                    INSERT INTO pow_service_config (
+                        id, mode, use_token_for_pow, server_url, api_key, proxy_enabled, proxy_url
+                    )
+                    VALUES (1, ?, ?, ?, ?, ?, ?)
+                """, (mode, use_token_for_pow, server_url, api_key, proxy_enabled, proxy_url))
 
         # Ensure lambda_config has a row
         if await self._table_exists(db, "lambda_config"):
@@ -669,7 +774,7 @@ class Database:
         
         使用版本号机制，只在版本变化时执行完整迁移检查
         """
-        CURRENT_DB_VERSION = 14  # 增加此版本号以触发迁移
+        CURRENT_DB_VERSION = 15  # 增加此版本号以触发迁移
         
         db = await self._get_connection()
         try:
@@ -755,7 +860,19 @@ class Database:
             ("watermark_free_config", "parse_method", "TEXT DEFAULT 'third_party'"),
             ("watermark_free_config", "custom_parse_url", "TEXT"),
             ("watermark_free_config", "custom_parse_token", "TEXT"),
+            ("watermark_free_config", "fallback_on_failure", "BOOLEAN DEFAULT 1"),
             ("proxy_config", "proxy_pool_enabled", "BOOLEAN DEFAULT 0"),
+            ("proxy_config", "image_upload_proxy_enabled", "BOOLEAN DEFAULT 0"),
+            ("proxy_config", "image_upload_proxy_url", "TEXT"),
+            ("call_logic_config", "call_mode", "TEXT DEFAULT 'default'"),
+            ("call_logic_config", "polling_mode_enabled", "BOOLEAN DEFAULT 0"),
+            ("call_logic_config", "poll_interval", "REAL DEFAULT 2.5"),
+            ("pow_service_config", "mode", "TEXT DEFAULT 'local'"),
+            ("pow_service_config", "use_token_for_pow", "BOOLEAN DEFAULT 0"),
+            ("pow_service_config", "server_url", "TEXT"),
+            ("pow_service_config", "api_key", "TEXT"),
+            ("pow_service_config", "proxy_enabled", "BOOLEAN DEFAULT 0"),
+            ("pow_service_config", "proxy_url", "TEXT"),
             ("request_logs", "task_id", "TEXT"),
             ("request_logs", "updated_at", "TIMESTAMP"),
             ("tasks", "generation_id", "TEXT"),
@@ -856,6 +973,29 @@ class Database:
                     sora_app_headers_enabled BOOLEAN DEFAULT 1,
                     package_name TEXT DEFAULT 'com.openai.sora',
                     client_type TEXT DEFAULT 'android',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """),
+            ("call_logic_config", """
+                CREATE TABLE IF NOT EXISTS call_logic_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    call_mode TEXT DEFAULT 'default',
+                    polling_mode_enabled BOOLEAN DEFAULT 0,
+                    poll_interval REAL DEFAULT 2.5,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """),
+            ("pow_service_config", """
+                CREATE TABLE IF NOT EXISTS pow_service_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    mode TEXT DEFAULT 'local',
+                    use_token_for_pow BOOLEAN DEFAULT 0,
+                    server_url TEXT,
+                    api_key TEXT,
+                    proxy_enabled BOOLEAN DEFAULT 0,
+                    proxy_url TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -1016,6 +1156,8 @@ class Database:
                     proxy_enabled BOOLEAN DEFAULT 0,
                     proxy_url TEXT,
                     proxy_pool_enabled BOOLEAN DEFAULT 0,
+                    image_upload_proxy_enabled BOOLEAN DEFAULT 0,
+                    image_upload_proxy_url TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -1029,6 +1171,7 @@ class Database:
                     parse_method TEXT DEFAULT 'third_party',
                     custom_parse_url TEXT,
                     custom_parse_token TEXT,
+                    fallback_on_failure BOOLEAN DEFAULT 1,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -1062,6 +1205,33 @@ class Database:
                 CREATE TABLE IF NOT EXISTS token_refresh_config (
                     id INTEGER PRIMARY KEY DEFAULT 1,
                     at_auto_refresh_enabled BOOLEAN DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Call logic config table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS call_logic_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    call_mode TEXT DEFAULT 'default',
+                    polling_mode_enabled BOOLEAN DEFAULT 0,
+                    poll_interval REAL DEFAULT 2.5,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # POW service config table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS pow_service_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    mode TEXT DEFAULT 'local',
+                    use_token_for_pow BOOLEAN DEFAULT 0,
+                    server_url TEXT,
+                    api_key TEXT,
+                    proxy_enabled BOOLEAN DEFAULT 0,
+                    proxy_url TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -2321,11 +2491,19 @@ class Database:
             # This should not happen in normal operation as _ensure_config_rows should create it
             return ProxyConfig(proxy_enabled=False)
     
-    async def update_proxy_config(self, enabled: bool, proxy_url: Optional[str], proxy_pool_enabled: bool = False):
+    async def update_proxy_config(
+        self,
+        enabled: bool,
+        proxy_url: Optional[str],
+        proxy_pool_enabled: bool = False,
+        image_upload_proxy_enabled: bool = False,
+        image_upload_proxy_url: Optional[str] = None,
+    ):
         """Update proxy configuration with retry for optimistic lock conflicts
-        
+
         Uses INSERT ... ON CONFLICT for SQLite or INSERT ... ON DUPLICATE KEY UPDATE for MySQL/TiDB
         """
+        image_upload_proxy_url = image_upload_proxy_url if image_upload_proxy_url else None
         max_retries = 5
         for attempt in range(max_retries):
             try:
@@ -2334,20 +2512,25 @@ class Database:
                     cursor = await db.execute("SELECT COUNT(*) FROM proxy_config WHERE id = 1")
                     count = await cursor.fetchone()
                     row_exists = self._get_count_value(count) > 0
-                    
+
                     if row_exists:
                         # Update existing row
                         await db.execute("""
-                            UPDATE proxy_config 
-                            SET proxy_enabled = ?, proxy_url = ?, proxy_pool_enabled = ?, updated_at = CURRENT_TIMESTAMP
+                            UPDATE proxy_config
+                            SET proxy_enabled = ?, proxy_url = ?, proxy_pool_enabled = ?,
+                                image_upload_proxy_enabled = ?, image_upload_proxy_url = ?,
+                                updated_at = CURRENT_TIMESTAMP
                             WHERE id = 1
-                        """, (enabled, proxy_url, proxy_pool_enabled))
+                        """, (enabled, proxy_url, proxy_pool_enabled, image_upload_proxy_enabled, image_upload_proxy_url))
                     else:
                         # Insert new row
                         await db.execute("""
-                            INSERT INTO proxy_config (id, proxy_enabled, proxy_url, proxy_pool_enabled, updated_at)
-                            VALUES (1, ?, ?, ?, CURRENT_TIMESTAMP)
-                        """, (enabled, proxy_url, proxy_pool_enabled))
+                            INSERT INTO proxy_config (
+                                id, proxy_enabled, proxy_url, proxy_pool_enabled,
+                                image_upload_proxy_enabled, image_upload_proxy_url, updated_at
+                            )
+                            VALUES (1, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        """, (enabled, proxy_url, proxy_pool_enabled, image_upload_proxy_enabled, image_upload_proxy_url))
                     await db.commit()
                     return
             except Exception as e:
@@ -2367,27 +2550,37 @@ class Database:
             cursor = await db.execute("SELECT * FROM watermark_free_config WHERE id = 1")
             row = await cursor.fetchone()
             if row:
-                return WatermarkFreeConfig(**dict(row))
+                row_dict = row if isinstance(row, dict) else dict(row)
+                return WatermarkFreeConfig(**row_dict)
             # If no row exists, return a default config
             # This should not happen in normal operation as _ensure_config_rows should create it
             return WatermarkFreeConfig(watermark_free_enabled=False, parse_method="builtin")
 
     async def update_watermark_free_config(self, enabled: bool, parse_method: str = None,
-                                          custom_parse_url: str = None, custom_parse_token: str = None):
+                                          custom_parse_url: str = None, custom_parse_token: str = None,
+                                          fallback_on_failure: Optional[bool] = None):
         """Update watermark-free configuration"""
         async with self._connect() as db:
             # First check if row exists
             cursor = await db.execute("SELECT COUNT(*) FROM watermark_free_config WHERE id = 1")
             count = await cursor.fetchone()
             row_exists = self._get_count_value(count) > 0
-            
+
             if not row_exists:
-                # Insert if not exists
                 await db.execute("""
-                    INSERT INTO watermark_free_config (id, watermark_free_enabled, parse_method, custom_parse_url, custom_parse_token)
-                    VALUES (1, ?, ?, ?, ?)
-                """, (enabled, parse_method or "builtin", custom_parse_url, custom_parse_token))
-            elif parse_method is None and custom_parse_url is None and custom_parse_token is None:
+                    INSERT INTO watermark_free_config (
+                        id, watermark_free_enabled, parse_method, custom_parse_url,
+                        custom_parse_token, fallback_on_failure
+                    )
+                    VALUES (1, ?, ?, ?, ?, ?)
+                """, (
+                    enabled,
+                    parse_method or "builtin",
+                    custom_parse_url,
+                    custom_parse_token,
+                    True if fallback_on_failure is None else fallback_on_failure,
+                ))
+            elif parse_method is None and custom_parse_url is None and custom_parse_token is None and fallback_on_failure is None:
                 # Only update enabled status
                 await db.execute("""
                     UPDATE watermark_free_config
@@ -2395,13 +2588,24 @@ class Database:
                     WHERE id = 1
                 """, (enabled,))
             else:
-                # Update all fields
                 await db.execute("""
                     UPDATE watermark_free_config
-                    SET watermark_free_enabled = ?, parse_method = ?, custom_parse_url = ?,
-                        custom_parse_token = ?, updated_at = CURRENT_TIMESTAMP
+                    SET watermark_free_enabled = ?,
+                        parse_method = COALESCE(?, parse_method),
+                        custom_parse_url = CASE WHEN ? IS NOT NULL THEN ? ELSE custom_parse_url END,
+                        custom_parse_token = CASE WHEN ? IS NOT NULL THEN ? ELSE custom_parse_token END,
+                        fallback_on_failure = COALESCE(?, fallback_on_failure),
+                        updated_at = CURRENT_TIMESTAMP
                     WHERE id = 1
-                """, (enabled, parse_method or "builtin", custom_parse_url, custom_parse_token))
+                """, (
+                    enabled,
+                    parse_method,
+                    custom_parse_url,
+                    custom_parse_url,
+                    custom_parse_token,
+                    custom_parse_token,
+                    fallback_on_failure,
+                ))
             await db.commit()
 
     # Cache config operations
@@ -2514,7 +2718,7 @@ class Database:
             cursor = await db.execute("SELECT COUNT(*) FROM token_refresh_config WHERE id = 1")
             count = await cursor.fetchone()
             row_exists = self._get_count_value(count) > 0
-            
+
             if not row_exists:
                 # Insert if not exists
                 await db.execute("""
@@ -2527,6 +2731,132 @@ class Database:
                     SET at_auto_refresh_enabled = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE id = 1
                 """, (at_auto_refresh_enabled,))
+            await db.commit()
+
+    async def get_call_logic_config(self) -> CallLogicConfig:
+        """Get call logic configuration"""
+        async with self._connect(readonly=True) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM call_logic_config WHERE id = 1")
+            row = await cursor.fetchone()
+            if row:
+                row_dict = row if isinstance(row, dict) else dict(row)
+                call_mode = row_dict.get("call_mode")
+                if call_mode not in ("default", "polling"):
+                    row_dict["call_mode"] = "polling" if row_dict.get("polling_mode_enabled") else "default"
+                poll_interval = row_dict.get("poll_interval", 2.5)
+                try:
+                    poll_interval = float(poll_interval)
+                except (TypeError, ValueError):
+                    poll_interval = 2.5
+                if poll_interval <= 0:
+                    poll_interval = 2.5
+                row_dict["poll_interval"] = poll_interval
+                return CallLogicConfig(**row_dict)
+            return CallLogicConfig(call_mode="default", polling_mode_enabled=False, poll_interval=2.5)
+
+    async def update_call_logic_config(self, call_mode: str, poll_interval: Optional[float] = None):
+        """Update call logic configuration"""
+        normalized = "polling" if call_mode == "polling" else "default"
+        effective_poll_interval = 2.5
+
+        if poll_interval is not None:
+            try:
+                effective_poll_interval = float(poll_interval)
+            except (TypeError, ValueError):
+                effective_poll_interval = 2.5
+        else:
+            current_config = await self.get_call_logic_config()
+            effective_poll_interval = current_config.poll_interval
+
+        if effective_poll_interval <= 0:
+            effective_poll_interval = 2.5
+
+        async with self._connect() as db:
+            cursor = await db.execute("SELECT COUNT(*) FROM call_logic_config WHERE id = 1")
+            count = await cursor.fetchone()
+            row_exists = self._get_count_value(count) > 0
+
+            if not row_exists:
+                await db.execute("""
+                    INSERT INTO call_logic_config (id, call_mode, polling_mode_enabled, poll_interval)
+                    VALUES (1, ?, ?, ?)
+                """, (normalized, normalized == "polling", effective_poll_interval))
+            else:
+                await db.execute("""
+                    UPDATE call_logic_config
+                    SET call_mode = ?, polling_mode_enabled = ?, poll_interval = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = 1
+                """, (normalized, normalized == "polling", effective_poll_interval))
+            await db.commit()
+
+    async def get_pow_service_config(self) -> PowServiceConfig:
+        """Get POW service configuration"""
+        async with self._connect(readonly=True) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM pow_service_config WHERE id = 1")
+            row = await cursor.fetchone()
+            if row:
+                row_dict = row if isinstance(row, dict) else dict(row)
+                return PowServiceConfig(**row_dict)
+            return PowServiceConfig(
+                mode="local",
+                use_token_for_pow=False,
+                server_url=None,
+                api_key=None,
+                proxy_enabled=False,
+                proxy_url=None,
+            )
+
+    async def update_pow_service_config(
+        self,
+        mode: str,
+        use_token_for_pow: bool = False,
+        server_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        proxy_enabled: Optional[bool] = None,
+        proxy_url: Optional[str] = None,
+    ):
+        """Update POW service configuration"""
+        normalized_mode = mode if mode in ("local", "external") else "local"
+        normalized_proxy_enabled = bool(proxy_enabled) if proxy_enabled is not None else False
+        normalized_server_url = server_url if server_url else None
+        normalized_api_key = api_key if api_key else None
+        normalized_proxy_url = proxy_url if proxy_url else None
+
+        async with self._connect() as db:
+            cursor = await db.execute("SELECT COUNT(*) FROM pow_service_config WHERE id = 1")
+            count = await cursor.fetchone()
+            row_exists = self._get_count_value(count) > 0
+
+            if not row_exists:
+                await db.execute("""
+                    INSERT INTO pow_service_config (
+                        id, mode, use_token_for_pow, server_url, api_key, proxy_enabled, proxy_url
+                    )
+                    VALUES (1, ?, ?, ?, ?, ?, ?)
+                """, (
+                    normalized_mode,
+                    use_token_for_pow,
+                    normalized_server_url,
+                    normalized_api_key,
+                    normalized_proxy_enabled,
+                    normalized_proxy_url,
+                ))
+            else:
+                await db.execute("""
+                    UPDATE pow_service_config
+                    SET mode = ?, use_token_for_pow = ?, server_url = ?, api_key = ?,
+                        proxy_enabled = ?, proxy_url = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = 1
+                """, (
+                    normalized_mode,
+                    use_token_for_pow,
+                    normalized_server_url,
+                    normalized_api_key,
+                    normalized_proxy_enabled,
+                    normalized_proxy_url,
+                ))
             await db.commit()
 
     # Lambda config operations

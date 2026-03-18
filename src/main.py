@@ -174,6 +174,22 @@ async def startup_event():
     token_refresh_config = await db.get_token_refresh_config()
     config.set_at_auto_refresh_enabled(token_refresh_config.at_auto_refresh_enabled)
 
+    # Load call logic configuration from database
+    call_logic_config = await db.get_call_logic_config()
+    config.set_call_logic_mode(call_logic_config.call_mode)
+    config.set_poll_interval(call_logic_config.poll_interval)
+    print(f"✓ Call logic configuration loaded ({call_logic_config.call_mode}, {call_logic_config.poll_interval}s)")
+
+    # Load POW service configuration from database
+    pow_service_config = await db.get_pow_service_config()
+    config.set_pow_service_mode(pow_service_config.mode)
+    config.set_pow_service_use_token_for_pow(pow_service_config.use_token_for_pow)
+    config.set_pow_service_server_url(pow_service_config.server_url or "")
+    config.set_pow_service_api_key(pow_service_config.api_key or "")
+    config.set_pow_service_proxy_enabled(pow_service_config.proxy_enabled)
+    config.set_pow_service_proxy_url(pow_service_config.proxy_url or "")
+    print(f"✓ POW service configuration loaded ({pow_service_config.mode})")
+
     # Load Cloudflare Solver configuration from database
     await db.ensure_cloudflare_solver_config_row(config_dict)
     cloudflare_config = await db.get_cloudflare_solver_config()

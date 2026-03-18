@@ -56,7 +56,13 @@ class Config:
     @property
     def poll_interval(self) -> float:
         return self._config["sora"]["poll_interval"]
-    
+
+    def set_poll_interval(self, interval: float):
+        """Set task progress polling interval in seconds"""
+        if "sora" not in self._config:
+            self._config["sora"] = {}
+        self._config["sora"]["poll_interval"] = float(interval)
+
     @property
     def max_poll_attempts(self) -> int:
         return self._config["sora"]["max_poll_attempts"]
@@ -208,6 +214,11 @@ class Config:
         return self._config.get("watermark_free", {}).get("max_concurrency", 2)
 
     @property
+    def watermark_free_fallback_on_failure(self) -> bool:
+        """Get whether watermark-free mode falls back to watermarked output on failure"""
+        return self._config.get("watermark_free", {}).get("fallback_on_failure", True)
+
+    @property
     def at_auto_refresh_enabled(self) -> bool:
         """Get AT auto refresh enabled status"""
         return self._config.get("token_refresh", {}).get("at_auto_refresh_enabled", False)
@@ -217,6 +228,105 @@ class Config:
         if "token_refresh" not in self._config:
             self._config["token_refresh"] = {}
         self._config["token_refresh"]["at_auto_refresh_enabled"] = enabled
+
+    @property
+    def polling_mode_enabled(self) -> bool:
+        """Get polling mode enabled status"""
+        return self.call_logic_mode == "polling"
+
+    @property
+    def call_logic_mode(self) -> str:
+        """Get call logic mode (default or polling)"""
+        call_logic = self._config.get("call_logic", {})
+        mode = call_logic.get("call_mode")
+        if mode in ("default", "polling"):
+            return mode
+        if call_logic.get("polling_mode_enabled", False):
+            return "polling"
+        return "default"
+
+    def set_polling_mode_enabled(self, enabled: bool):
+        """Set polling mode enabled/disabled"""
+        self.set_call_logic_mode("polling" if enabled else "default")
+
+    def set_call_logic_mode(self, mode: str):
+        """Set call logic mode (default or polling)"""
+        normalized = "polling" if mode == "polling" else "default"
+        if "call_logic" not in self._config:
+            self._config["call_logic"] = {}
+        self._config["call_logic"]["call_mode"] = normalized
+        self._config["call_logic"]["polling_mode_enabled"] = normalized == "polling"
+
+    @property
+    def timezone_offset(self) -> int:
+        """Get configured timezone offset in hours"""
+        return int(self._config.get("timezone", {}).get("timezone_offset", 8))
+
+    @property
+    def pow_service_mode(self) -> str:
+        """Get POW service mode (local or external)"""
+        return self._config.get("pow_service", {}).get("mode", "local")
+
+    def set_pow_service_mode(self, mode: str):
+        """Set POW service mode"""
+        if "pow_service" not in self._config:
+            self._config["pow_service"] = {}
+        self._config["pow_service"]["mode"] = mode
+
+    @property
+    def pow_service_use_token_for_pow(self) -> bool:
+        """Whether to use current token for POW calculation"""
+        return self._config.get("pow_service", {}).get("use_token_for_pow", False)
+
+    def set_pow_service_use_token_for_pow(self, enabled: bool):
+        """Set whether to use current token for POW calculation"""
+        if "pow_service" not in self._config:
+            self._config["pow_service"] = {}
+        self._config["pow_service"]["use_token_for_pow"] = enabled
+
+    @property
+    def pow_service_server_url(self) -> str:
+        """Get POW service server URL"""
+        return self._config.get("pow_service", {}).get("server_url", "")
+
+    def set_pow_service_server_url(self, url: str):
+        """Set POW service server URL"""
+        if "pow_service" not in self._config:
+            self._config["pow_service"] = {}
+        self._config["pow_service"]["server_url"] = url
+
+    @property
+    def pow_service_api_key(self) -> str:
+        """Get POW service API key"""
+        return self._config.get("pow_service", {}).get("api_key", "")
+
+    def set_pow_service_api_key(self, api_key: str):
+        """Set POW service API key"""
+        if "pow_service" not in self._config:
+            self._config["pow_service"] = {}
+        self._config["pow_service"]["api_key"] = api_key
+
+    @property
+    def pow_service_proxy_enabled(self) -> bool:
+        """Get POW service proxy enabled status"""
+        return self._config.get("pow_service", {}).get("proxy_enabled", False)
+
+    def set_pow_service_proxy_enabled(self, enabled: bool):
+        """Set POW service proxy enabled status"""
+        if "pow_service" not in self._config:
+            self._config["pow_service"] = {}
+        self._config["pow_service"]["proxy_enabled"] = enabled
+
+    @property
+    def pow_service_proxy_url(self) -> str:
+        """Get POW service proxy URL"""
+        return self._config.get("pow_service", {}).get("proxy_url", "")
+
+    def set_pow_service_proxy_url(self, url: str):
+        """Set POW service proxy URL"""
+        if "pow_service" not in self._config:
+            self._config["pow_service"] = {}
+        self._config["pow_service"]["proxy_url"] = url
 
     # ==================== Cloudflare Configuration ====================
     

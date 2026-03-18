@@ -1,10 +1,7 @@
 """Sora API client module"""
-import base64
-import io
 import json
 import time
 import random
-import string
 import re
 from typing import Optional, Dict, Any, Tuple, List
 from curl_cffi.requests import AsyncSession
@@ -12,7 +9,6 @@ from curl_cffi import CurlMime
 from .proxy_manager import ProxyManager
 from .cloudflare_solver import (
     solve_cloudflare_challenge,
-    is_cloudflare_challenge,
     get_cloudflare_state,
     is_cf_refreshing,
 )
@@ -22,10 +18,6 @@ from ..core.http_utils import (
     build_sora_headers,
     DEFAULT_USER_AGENT,
     get_random_fingerprint,
-    get_random_user_agent,
-    build_openai_sentinel_token,
-    generate_id,
-    get_pow_token_mock,
 )
 from .sentinel_token_manager import sentinel_token_manager
 from .translator import translator
@@ -102,7 +94,7 @@ class SoraClient:
     ) -> str:
         """
         通过 sentinel_token_manager 获取 openai-sentinel-token
-        
+
         使用 Playwright + 代理池方式获取，支持高并发缓存
         """
         try:
@@ -210,7 +202,8 @@ class SoraClient:
                            add_sentinel_token: bool = False,
                            max_retries: int = 3,
                            token_id: Optional[int] = None,
-                           use_lambda: Optional[bool] = None) -> Dict[str, Any]:
+                           use_lambda: Optional[bool] = None,
+                           use_image_upload_proxy: bool = False) -> Dict[str, Any]:
         """Make HTTP request with proxy support and 429 retry
 
         Args:
@@ -223,6 +216,7 @@ class SoraClient:
             max_retries: Maximum number of retries for 429/CF errors
             token_id: Token ID for getting token-specific proxy (optional)
             use_lambda: Force use/not use Lambda (None = auto detect)
+            use_image_upload_proxy: Use dedicated image-upload proxy selection for multipart uploads
         """
         import asyncio
         
@@ -246,7 +240,9 @@ class SoraClient:
                 # Lambda 失败时回退到直接请求
         
         # 对于 /nf/create 请求，使用验证过的代理（确保能访问 datadoghq.com）
-        if endpoint in ("/nf/create", "/nf/create/storyboard"):
+        if use_image_upload_proxy:
+            proxy_url = await self.proxy_manager.get_image_upload_proxy_url(token_id)
+        elif endpoint in ("/nf/create", "/nf/create/storyboard"):
             proxy_url = await self.proxy_manager.get_validated_proxy_url(token_id)
         else:
             proxy_url = await self.proxy_manager.get_proxy_url(token_id)
@@ -266,7 +262,7 @@ class SoraClient:
             force_refresh=False
         ) if add_sentinel_token else None
         sentinel_refreshed = False  # 标记是否已刷新过 sentinel token
-        
+
         # 获取缓存的 device_id 用于 oai-did cookie
         cached_device_id = sentinel_token_manager.get_cached_device_id() if add_sentinel_token else None
         
@@ -884,7 +880,13 @@ class SoraClient:
         
         return result
     
-    async def upload_image(self, image_data: bytes, token: str, filename: str = "image.png") -> str:
+    async def upload_image(
+        self,
+        image_data: bytes,
+        token: str,
+        filename: str = "image.png",
+        token_id: Optional[int] = None,
+    ) -> str:
         """Upload image and return media_id
 
         使用 CurlMime 对象上传文件（curl_cffi 的正确方式）
@@ -914,11 +916,19 @@ class SoraClient:
             data=filename.encode('utf-8')
         )
 
-        result = await self._make_request("POST", "/uploads", token, multipart=mp)
+        result = await self._make_request(
+            "POST",
+            "/uploads",
+            token,
+            multipart=mp,
+            token_id=token_id,
+            use_image_upload_proxy=True,
+        )
         return result["id"]
     
     async def generate_image(self, prompt: str, token: str, width: int = 360,
-                            height: int = 360, media_id: Optional[str] = None) -> str:
+                            height: int = 360, media_id: Optional[str] = None,
+                            token_id: Optional[int] = None) -> str:
         """Generate image (text-to-image or image-to-image)"""
         # Translate Chinese prompt to English if enabled
         prompt = await translator.translate_to_english(prompt)
@@ -945,13 +955,22 @@ class SoraClient:
         }
 
         # 生成请求需要添加 sentinel token，429 最多重试 3 次
-        result = await self._make_request("POST", "/video_gen", token, json_data=json_data, add_sentinel_token=True, max_retries=3)
+        result = await self._make_request(
+            "POST",
+            "/video_gen",
+            token,
+            json_data=json_data,
+            add_sentinel_token=True,
+            max_retries=3,
+            token_id=token_id,
+        )
         return result["id"]
     
     async def generate_video(self, prompt: str, token: str, orientation: str = "landscape",
                             media_id: Optional[str] = None, n_frames: int = 450,
                             style_id: Optional[str] = None,
-                            model: str = "sy_8_20251208", size: str = "small") -> str:
+                            model: str = "sy_8_20251208", size: str = "small",
+                            token_id: Optional[int] = None) -> str:
         """Generate video (text-to-video or image-to-video)
         
         Args:
@@ -1006,38 +1025,49 @@ class SoraClient:
             json_data["style_id"] = style_id.lower()
 
         # 生成请求需要添加 sentinel token，429 最多重试 3 次
-        result = await self._make_request("POST", "/nf/create", token, json_data=json_data, add_sentinel_token=True, max_retries=3)
+        result = await self._make_request(
+            "POST",
+            "/nf/create",
+            token,
+            json_data=json_data,
+            add_sentinel_token=True,
+            max_retries=3,
+            token_id=token_id,
+        )
         return result["id"]
     
-    async def get_image_tasks(self, token: str, limit: int = 20) -> Dict[str, Any]:
+    async def get_image_tasks(self, token: str, limit: int = 20,
+                              token_id: Optional[int] = None) -> Dict[str, Any]:
         """Get recent image generation tasks"""
-        return await self._make_request("GET", f"/v2/recent_tasks?limit={limit}", token)
-    
-    async def get_video_drafts(self, token: str, limit: int = 15) -> Dict[str, Any]:
-        """Get recent video drafts"""
-        return await self._make_request("GET", f"/project_y/profile/drafts?limit={limit}", token)
+        return await self._make_request("GET", f"/v2/recent_tasks?limit={limit}", token, token_id=token_id)
 
-    async def get_pending_tasks(self, token: str) -> list:
+    async def get_video_drafts(self, token: str, limit: int = 15,
+                               token_id: Optional[int] = None) -> Dict[str, Any]:
+        """Get recent video drafts"""
+        return await self._make_request("GET", f"/project_y/profile/drafts?limit={limit}", token, token_id=token_id)
+
+    async def get_pending_tasks(self, token: str, token_id: Optional[int] = None) -> list:
         """Get pending video generation tasks (v1)
 
         Returns:
             List of pending tasks with progress information
         """
-        result = await self._make_request("GET", "/nf/pending", token)
+        result = await self._make_request("GET", "/nf/pending", token, token_id=token_id)
         # The API returns a list directly
         return result if isinstance(result, list) else []
 
-    async def get_pending_tasks_v2(self, token: str) -> list:
+    async def get_pending_tasks_v2(self, token: str, token_id: Optional[int] = None) -> list:
         """Get pending video generation tasks (v2)
 
         Returns:
             List of pending tasks with progress information
         """
-        result = await self._make_request("GET", "/nf/pending/v2", token)
+        result = await self._make_request("GET", "/nf/pending/v2", token, token_id=token_id)
         # The API returns a list directly
         return result if isinstance(result, list) else []
 
-    async def get_task_progress(self, task_id: str, token: str) -> Optional[Dict[str, Any]]:
+    async def get_task_progress(self, task_id: str, token: str,
+                                token_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """Get video generation task progress by task ID
 
         Args:
@@ -1054,7 +1084,7 @@ class SoraClient:
             - generations: list of generated videos
             Returns None if task not found
         """
-        pending_tasks = await self.get_pending_tasks_v2(token)
+        pending_tasks = await self.get_pending_tasks_v2(token, token_id=token_id)
         for task in pending_tasks:
             if task.get("id") == task_id:
                 return task
@@ -1271,7 +1301,8 @@ class SoraClient:
 
     async def create_character_from_generation(self, generation_id: str, token: str,
                                                timestamps: Optional[List[int]] = None,
-                                               character_id: Optional[str] = None) -> str:
+                                               character_id: Optional[str] = None,
+                                               token_id: Optional[int] = None) -> str:
         """Create character (cameo) from a generation ID
 
         Args:
@@ -1290,13 +1321,19 @@ class SoraClient:
         if timestamps:
             payload["timestamps"] = timestamps
 
-        result = await self._make_request("POST", "/characters/from-generation", token, json_data=payload)
+        result = await self._make_request("POST", "/characters/from-generation", token, json_data=payload, token_id=token_id)
         cameo_id = result.get("id") or result.get("cameo_id")
         if not cameo_id:
             raise Exception("No cameo_id in from-generation response")
         return cameo_id
 
-    async def upload_character_video(self, video_data: bytes, token: str, timestamps: str = None) -> str:
+    async def upload_character_video(
+        self,
+        video_data: bytes,
+        token: str,
+        timestamps: str = None,
+        token_id: Optional[int] = None,
+    ) -> str:
         """Upload character video and return cameo_id
 
         Args:
@@ -1321,7 +1358,13 @@ class SoraClient:
             data=ts_value.encode('utf-8')
         )
 
-        result = await self._make_request("POST", "/characters/upload", token, multipart=mp)
+        result = await self._make_request(
+            "POST",
+            "/characters/upload",
+            token,
+            multipart=mp,
+            token_id=token_id,
+        )
         return result.get("id")
 
     async def get_cameo_status(self, cameo_id: str, token: str) -> Dict[str, Any]:
@@ -1466,7 +1509,8 @@ class SoraClient:
         result = await self._make_request("POST", f"/project_y/cameos/by_id/{cameo_id}/update_v2", token, json_data=json_data)
         return result
 
-    async def upload_character_image(self, image_data: bytes, token: str) -> str:
+    async def upload_character_image(self, image_data: bytes, token: str,
+                                     token_id: Optional[int] = None) -> str:
         """Upload character image and return asset_pointer
 
         Args:
@@ -1488,7 +1532,14 @@ class SoraClient:
             data=b"profile"
         )
 
-        result = await self._make_request("POST", "/project_y/file/upload", token, multipart=mp)
+        result = await self._make_request(
+            "POST",
+            "/project_y/file/upload",
+            token,
+            multipart=mp,
+            token_id=token_id,
+            use_image_upload_proxy=True,
+        )
         return result.get("asset_pointer")
 
     async def delete_character(self, character_id: str, token: str) -> bool:
@@ -1539,7 +1590,9 @@ class SoraClient:
         return True
 
     async def remix_video(self, remix_target_id: str, prompt: str, token: str,
-                         orientation: str = "portrait", n_frames: int = 450) -> str:
+                         orientation: str = "portrait", n_frames: int = 450,
+                         style_id: Optional[str] = None,
+                         token_id: Optional[int] = None) -> str:
         """Generate video using remix (based on existing video)
 
         Args:
@@ -1572,11 +1625,22 @@ class SoraClient:
             "storyboard_id": None
         }
 
-        result = await self._make_request("POST", "/nf/create", token, json_data=json_data, add_sentinel_token=True)
+        if style_id:
+            json_data["style_id"] = style_id.lower()
+
+        result = await self._make_request(
+            "POST",
+            "/nf/create",
+            token,
+            json_data=json_data,
+            add_sentinel_token=True,
+            token_id=token_id,
+        )
         return result.get("id")
 
     async def generate_storyboard(self, prompt: str, token: str, orientation: str = "landscape",
-                                 media_id: Optional[str] = None, n_frames: int = 450) -> str:
+                                 media_id: Optional[str] = None, n_frames: int = 450,
+                                 token_id: Optional[int] = None) -> str:
         """Generate video using storyboard mode
 
         Args:
@@ -1616,5 +1680,12 @@ class SoraClient:
             "video_caption": None
         }
 
-        result = await self._make_request("POST", "/nf/create/storyboard", token, json_data=json_data, add_sentinel_token=True)
+        result = await self._make_request(
+            "POST",
+            "/nf/create/storyboard",
+            token,
+            json_data=json_data,
+            add_sentinel_token=True,
+            token_id=token_id,
+        )
         return result.get("id")

@@ -169,24 +169,33 @@ class ProxyManager:
             raise ValueError(f"Invalid proxy_url format: {proxy_url}")
         return parsed
     
-    async def get_proxy_url(self, token_id: Optional[int] = None) -> Optional[str]:
-        """Get proxy URL if enabled, with pool rotation support
-        
+    async def get_proxy_url(self, token_id: Optional[int] = None, proxy_url: Optional[str] = None) -> Optional[str]:
+        """Get proxy URL if enabled, with direct override, token fallback, and pool rotation support
+
         Args:
-            token_id: Optional token ID for token-specific proxy (reserved for future use)
+            token_id: Optional token ID for token-specific proxy fallback
+            proxy_url: Direct proxy URL override
         """
+        if proxy_url:
+            return self.normalize_proxy_url(proxy_url)
+
+        if token_id is not None:
+            token = await self.db.get_token(token_id)
+            if token and token.proxy_url:
+                return self.normalize_proxy_url(token.proxy_url)
+
         config = await self.db.get_proxy_config()
-        
+
         if not config.proxy_enabled:
             return None
-        
+
         # If proxy pool is enabled, rotate through proxies
         if config.proxy_pool_enabled:
             async with self._pool_lock:
                 # Reload proxy pool if empty
                 if not self._proxy_pool:
                     self._proxy_pool = self._load_proxy_pool()
-                
+
                 if self._proxy_pool:
                     # Get current proxy and rotate index
                     proxy = self._proxy_pool[self._pool_index]
@@ -195,15 +204,39 @@ class ProxyManager:
                 else:
                     # Fallback to single proxy if pool is empty
                     return config.proxy_url if config.proxy_url else None
-        
+
         # Use single proxy
         return config.proxy_url if config.proxy_url else None
-    
-    async def update_proxy_config(self, enabled: bool, proxy_url: Optional[str], proxy_pool_enabled: bool = False):
+
+    async def get_image_upload_proxy_url(self, token_id: Optional[int] = None) -> Optional[str]:
+        """Get proxy URL specifically for image uploads"""
+        config = await self.db.get_proxy_config()
+        image_upload_enabled = getattr(config, "image_upload_proxy_enabled", False)
+        image_upload_proxy = getattr(config, "image_upload_proxy_url", None)
+        if image_upload_enabled and image_upload_proxy:
+            return self.normalize_proxy_url(image_upload_proxy)
+
+        return await self.get_proxy_url(token_id=token_id)
+
+    async def update_proxy_config(
+        self,
+        enabled: bool,
+        proxy_url: Optional[str],
+        proxy_pool_enabled: bool = False,
+        image_upload_proxy_enabled: bool = False,
+        image_upload_proxy_url: Optional[str] = None,
+    ):
         """Update proxy configuration"""
         normalized_proxy = self.normalize_proxy_url(proxy_url)
-        await self.db.update_proxy_config(enabled, normalized_proxy, proxy_pool_enabled)
-        
+        normalized_image_upload_proxy = self.normalize_proxy_url(image_upload_proxy_url)
+        await self.db.update_proxy_config(
+            enabled,
+            normalized_proxy,
+            proxy_pool_enabled,
+            image_upload_proxy_enabled,
+            normalized_image_upload_proxy,
+        )
+
         # Reset proxy pool when config changes
         async with self._pool_lock:
             self._proxy_pool = []
@@ -426,18 +459,27 @@ class ProxyManager:
     
     async def get_validated_proxy_url(self, token_id: Optional[int] = None, max_attempts: int = 10) -> Optional[str]:
         """Get a proxy URL that has been validated for datadoghq.com access
-        
+
         If the current proxy cannot access datadoghq.com, rotate to the next one.
-        
+
         Args:
             token_id: Optional token ID for token-specific proxy
             max_attempts: Maximum number of proxies to try
-            
+
         Returns:
             A valid proxy URL, or None if no proxy is needed or all proxies failed
         """
+        if token_id is not None:
+            token = await self.db.get_token(token_id)
+            if token and token.proxy_url:
+                normalized_proxy = self.normalize_proxy_url(token.proxy_url)
+                if await self.check_proxy_datadoghq_access(normalized_proxy):
+                    return normalized_proxy
+                print(f"⚠️ [ProxyManager] Token-specific proxy cannot access datadoghq.com, continuing anyway...")
+                return normalized_proxy
+
         config = await self.db.get_proxy_config()
-        
+
         if not config.proxy_enabled:
             return None
         

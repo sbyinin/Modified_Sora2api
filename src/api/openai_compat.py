@@ -68,21 +68,21 @@ def _extract_remix_id(text: str) -> str:
 async def list_models(api_key: str = Depends(verify_api_key_header)):
     """List available models"""
     models = []
-    
+
     for model_id, config in MODEL_CONFIG.items():
         description = f"{config['type'].capitalize()} generation"
         if config['type'] == 'image':
             description += f" - {config['width']}x{config['height']}"
         else:
             description += f" - {config['orientation']}"
-        
+
         models.append({
             "id": model_id,
             "object": "model",
             "owned_by": "sora2api",
             "description": description
         })
-    
+
     return {
         "object": "list",
         "data": models
@@ -100,9 +100,9 @@ async def create_chat_completion(
     api_key: str = Depends(verify_api_key_header)
 ):
     """Create chat completion (unified endpoint for image and video generation)
-    
+
     Supports both streaming and non-streaming responses.
-    
+
     **Request format:**
     ```json
     {
@@ -117,7 +117,7 @@ async def create_chat_completion(
         "style_id": "anime"               // optional, video style
     }
     ```
-    
+
     **Multimodal content format:**
     ```json
     {
@@ -134,14 +134,14 @@ async def create_chat_completion(
         "stream": true
     }
     ```
-    
+
     **Streaming response format (SSE):**
     ```
     data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1234567890,"model":"sora","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":{"stage":"generation","status":"processing","progress":50,"message":"..."}},"finish_reason":null}]}
-    
+
     data: [DONE]
     ```
-    
+
     **Non-streaming response:**
     Returns availability check message only. Use stream=true for actual generation.
     """
@@ -328,7 +328,7 @@ async def create_chat_completion(
                         next_task.cancel()
                     if disconnect_task and not disconnect_task.done():
                         disconnect_task.cancel()
-                
+
                 # If error occurred, send OpenAI-compatible error in stream format
                 if has_error:
                     error_chunk = {
@@ -719,7 +719,7 @@ def _prune_video_tasks(now: Optional[float] = None) -> None:
 
 async def _process_video_generation_v2(video_id: str):
     """Background task to process video generation (updates in-memory task)
-    
+
     Compatible with new-api-main sora relay format.
     """
     import re
@@ -729,20 +729,20 @@ async def _process_video_generation_v2(video_id: str):
     if not task_info or not isinstance(task_info, dict):
         print(f"[VideoTask] {video_id}: task_info not found in _video_tasks")
         return
-    
+
     db = Database()
-    
+
     try:
         task_info["status"] = "queued"
         _touch_video_task(task_info)
         print(f"[VideoTask] {video_id}: Starting generation...")
-        
+
         # Generate video
         result_url = None
         last_chunk = None
         chunk_count = 0
         error_detected = None  # Track errors from stream
-        
+
         async for chunk in generation_handler.handle_generation(
             model=task_info["internal_model"],
             prompt=task_info["prompt"],
@@ -755,7 +755,7 @@ async def _process_video_generation_v2(video_id: str):
             chunk_count += 1
             if isinstance(chunk, str):
                 last_chunk = chunk
-                
+
                 # Check for error in chunk (content violation, dead token, etc.)
                 if '"stage":"error"' in chunk or '"status":"error"' in chunk or 'content_policy_violation' in chunk:
                     try:
@@ -781,7 +781,7 @@ async def _process_video_generation_v2(video_id: str):
                         pass
                     if error_detected:
                         print(f"[VideoTask] {video_id}: Error detected in stream: {error_detected}")
-                
+
                 metadata = _extract_metadata_from_chunk(chunk)
                 if metadata.get("generation_id"):
                     task_info["generation_id"] = metadata.get("generation_id")
@@ -810,21 +810,21 @@ async def _process_video_generation_v2(video_id: str):
                     task_info["progress"] = progress
                     task_info["status"] = _normalize_video_status(task_info.get("status"), progress)
                     _touch_video_task(task_info)
-                
+
                 # Check for result URL in chunk - try multiple patterns
                 # Pattern 1: URL in video tag (e.g., <video src='url'>)
                 video_src_match = re.search(r"<video[^>]+src=['\"]([^'\"]+)['\"]", chunk)
                 if video_src_match:
                     result_url = video_src_match.group(1)
                     print(f"[VideoTask] {video_id}: Found URL in video tag: {result_url[:100]}...")
-                
+
                 # Pattern 2: Direct .mp4 URL (more permissive)
                 if not result_url:
                     url_match = re.search(r'(https?://[^\s\]"<>]+\.mp4[^\s\]"<>]*)', chunk)
                     if url_match:
                         result_url = url_match.group(1).rstrip("'").rstrip('"')
                         print(f"[VideoTask] {video_id}: Found MP4 URL: {result_url[:100]}...")
-                
+
                 # Pattern 3: URL in JSON content field
                 if not result_url:
                     try:
@@ -854,18 +854,18 @@ async def _process_video_generation_v2(video_id: str):
                                             pass
                     except:
                         pass
-                
+
                 # Pattern 4: Any URL with video-like extensions or paths
                 if not result_url:
                     any_url_match = re.search(r"(https?://[^\s'\"<>\]]+(?:\.mp4|/tmp/|/video)[^\s'\"<>\]]*)", chunk)
                     if any_url_match:
                         result_url = any_url_match.group(1)
                         print(f"[VideoTask] {video_id}: Found URL with pattern 4: {result_url[:100]}...")
-        
+
         print(f"[VideoTask] {video_id}: Generation loop finished. chunk_count={chunk_count}, result_url={result_url is not None}, error_detected={error_detected is not None}")
         if last_chunk:
             print(f"[VideoTask] {video_id}: Last chunk (truncated): {last_chunk[:200]}...")
-        
+
         # Check if error was detected during stream
         if error_detected:
             print(f"[VideoTask] {video_id}: Marking as failed due to error: {error_detected}")
@@ -877,7 +877,7 @@ async def _process_video_generation_v2(video_id: str):
             _touch_video_task(task_info)
             await db.update_task(video_id, "failed", 0.0, error_message=error_detected)
             return
-        
+
         # Try to get result from database if not found in stream
         if not result_url:
             print(f"[VideoTask] {video_id}: No URL found in stream, checking database...")
@@ -906,7 +906,7 @@ async def _process_video_generation_v2(video_id: str):
                         task_info["generation_id"] = db_task.generation_id
                     if db_task.permalink and not task_info.get("permalink"):
                         task_info["permalink"] = db_task.permalink
-            
+
             if not result_url:
                 # Look for completed task with same prompt
                 all_tasks = await db.get_recent_tasks(limit=10)
@@ -921,7 +921,7 @@ async def _process_video_generation_v2(video_id: str):
                                 result_url = db_task.result_urls
                             print(f"[VideoTask] {video_id}: Found URL in database: {result_url[:100] if result_url else 'None'}...")
                             break
-        
+
         if not result_url:
             error_msg = "Video URL not found after generation"
             print(f"[VideoTask] {video_id}: {error_msg}")
@@ -941,7 +941,7 @@ async def _process_video_generation_v2(video_id: str):
         task_info["completed_at"] = int(time.time())  # Unix timestamp in seconds
         task_info["result_url"] = result_url
         _touch_video_task(task_info)
-        
+
         # Update database
         await db.update_task(
             video_id,
@@ -951,19 +951,19 @@ async def _process_video_generation_v2(video_id: str):
             generation_id=task_info.get("generation_id"),
             permalink=task_info.get("permalink")
         )
-        
+
         print(f"[VideoTask] {video_id}: Task completed successfully. Status in memory: {task_info['status']}")
-    
+
     except Exception as e:
         print(f"[VideoTask] {video_id}: Exception occurred: {str(e)}")
         import traceback
         traceback.print_exc()
         task_info["status"] = "failed"
-        
+
         # 过滤内部错误，不暴露给用户
         from ..core.error_utils import filter_error_message, get_safe_error_response
         user_message = filter_error_message(e, error_type='video')
-        
+
         task_info["error"] = {
             "message": user_message,
             "code": "generation_failed"
@@ -981,7 +981,7 @@ async def _build_nf_create_payload(prompt: str, orientation: str, n_frames: int,
     # Translate prompt if needed
     from ..services.translator import translator
     translated_prompt = await translator.translate_to_english(prompt)
-    
+
     payload = {
         "kind": "video",
         "prompt": translated_prompt,
@@ -1029,27 +1029,27 @@ async def _poll_lambda_task_result(task_id: str, token_obj, prompt: str,
                                   payload: dict = None, image_data: str = None,
                                   final_model: str = None, style_id: str = None):
     """Poll Lambda task result with dead token retry support
-    
+
     When a dead token is detected, this function will:
     1. Disable the dead token
     2. Acquire a new token
     3. Re-submit the task with the new token
     4. Continue polling
-    
+
     The original task_id returned to user remains unchanged.
     """
     from ..services.generation_handler import DeadTokenError, InvalidTokenError, get_dead_token_config
     from ..services.lambda_manager import lambda_manager
     from ..core.database import Database
-    
+
     db = Database()
     dead_token_config = get_dead_token_config()
     max_retries = dead_token_config.max_retries if dead_token_config.enabled else 1
-    
+
     current_token_obj = token_obj
     current_task_id = task_id
     disabled_token_ids = set()
-    
+
     for retry_attempt in range(max_retries):
         try:
             async for _ in generation_handler._poll_task_result(
@@ -1074,26 +1074,26 @@ async def _poll_lambda_task_result(task_id: str, token_obj, prompt: str,
                 duration
             )
             return
-            
+
         except DeadTokenError as e:
             print(f"[Lambda] Dead token detected on attempt {retry_attempt + 1}/{max_retries}: token_id={e.token_id}, task_id={e.task_id}")
-            
+
             # Disable the dead token
             await generation_handler.token_manager.disable_token(e.token_id)
             disabled_token_ids.add(e.token_id)
             print(f"[Lambda] Auto-disabled dead token {e.token_id}")
-            
+
             # Release concurrency slot for dead token
             if generation_handler.concurrency_manager:
                 await generation_handler.concurrency_manager.release_video(e.token_id)
-            
+
             if retry_attempt >= max_retries - 1:
                 # No more retries
                 raise Exception(
                     f"Generation failed after {max_retries} attempts due to dead tokens. "
                     f"Last error: {str(e)}"
                 )
-            
+
             # Try to acquire a new token and re-submit
             try:
                 print(f"[Lambda] Acquiring new token for retry...")
@@ -1103,15 +1103,19 @@ async def _poll_lambda_task_result(task_id: str, token_obj, prompt: str,
                     excluded_token_ids=disabled_token_ids
                 )
                 print(f"[Lambda] Got new token {current_token_obj.id}")
-                
+
                 # Re-upload image if needed
                 if payload and image_data:
                     print(f"[Lambda] Re-uploading image with new token...")
                     image_bytes = generation_handler._decode_base64_image(image_data)
-                    media_id = await generation_handler.sora_client.upload_image(image_bytes, current_token_obj.token)
+                    media_id = await generation_handler.sora_client.upload_image(
+                        image_bytes,
+                        current_token_obj.token,
+                        token_id=current_token_obj.id,
+                    )
                     if media_id:
                         payload["inpaint_items"] = [{"kind": "upload", "upload_id": media_id}]
-                
+
                 # Re-submit task with new token
                 if payload:
                     print(f"[Lambda] Re-submitting task with new token...")
@@ -1131,7 +1135,7 @@ async def _poll_lambda_task_result(task_id: str, token_obj, prompt: str,
                         # Don't count this as a retry attempt for dead token detection
                         # but we still need to continue the loop
                         continue
-                    
+
                     # Update database to track the new actual task_id
                     # But keep the original task_id as the user-facing ID
                     await db.update_task(
@@ -1143,33 +1147,33 @@ async def _poll_lambda_task_result(task_id: str, token_obj, prompt: str,
                 else:
                     # No payload, can't re-submit
                     raise Exception("Cannot retry: no payload available for re-submission")
-                    
+
                 await asyncio.sleep(1.0)
                 continue
-                
+
             except Exception as retry_error:
                 print(f"[Lambda] Failed to retry: {retry_error}")
                 raise
-        
+
         except InvalidTokenError as e:
             print(f"[Lambda] Invalid token (auth error) on attempt {retry_attempt + 1}/{max_retries}: token_id={e.token_id}")
-            
+
             # Disable the invalid token
             await generation_handler.token_manager.disable_token(e.token_id)
             disabled_token_ids.add(e.token_id)
             print(f"[Lambda] Auto-disabled invalid token {e.token_id}")
-            
+
             # Release concurrency slot for invalid token
             if generation_handler.concurrency_manager:
                 await generation_handler.concurrency_manager.release_video(e.token_id)
-            
+
             if retry_attempt >= max_retries - 1:
                 # No more retries
                 raise Exception(
                     f"Generation failed after {max_retries} attempts due to invalid tokens. "
                     f"Last error: {str(e)}"
                 )
-            
+
             # Try to acquire a new token and re-submit
             try:
                 print(f"[Lambda] Acquiring new token for retry (after auth error)...")
@@ -1179,15 +1183,19 @@ async def _poll_lambda_task_result(task_id: str, token_obj, prompt: str,
                     excluded_token_ids=disabled_token_ids
                 )
                 print(f"[Lambda] Got new token {current_token_obj.id}")
-                
+
                 # Re-upload image if needed
                 if payload and image_data:
                     print(f"[Lambda] Re-uploading image with new token...")
                     image_bytes = generation_handler._decode_base64_image(image_data)
-                    media_id = await generation_handler.sora_client.upload_image(image_bytes, current_token_obj.token)
+                    media_id = await generation_handler.sora_client.upload_image(
+                        image_bytes,
+                        current_token_obj.token,
+                        token_id=current_token_obj.id,
+                    )
                     if media_id:
                         payload["inpaint_items"] = [{"kind": "upload", "upload_id": media_id}]
-                
+
                 # Re-submit task with new token
                 if payload:
                     print(f"[Lambda] Re-submitting task with new token...")
@@ -1203,7 +1211,7 @@ async def _poll_lambda_task_result(task_id: str, token_obj, prompt: str,
                             await generation_handler.concurrency_manager.release_video(current_token_obj.id)
                         disabled_token_ids.add(current_token_obj.id)
                         continue
-                    
+
                     await db.update_task(
                         task_id,
                         "processing",
@@ -1212,14 +1220,14 @@ async def _poll_lambda_task_result(task_id: str, token_obj, prompt: str,
                     )
                 else:
                     raise Exception("Cannot retry: no payload available for re-submission")
-                    
+
                 await asyncio.sleep(0.5)
                 continue
-                
+
             except Exception as retry_error:
                 print(f"[Lambda] Failed to retry after auth error: {retry_error}")
                 raise
-                
+
         except Exception as e:
             # Non-dead-token error
             duration = time.time() - start_time
@@ -1243,7 +1251,7 @@ async def _poll_lambda_task_result(task_id: str, token_obj, prompt: str,
             except Exception as log_error:
                 print(f"Warning: failed to update request log for task {task_id}: {log_error}")
             return
-    
+
     # Should not reach here
     if generation_handler.concurrency_manager:
         await generation_handler.concurrency_manager.release_video(current_token_obj.id)
@@ -1254,11 +1262,11 @@ async def _lambda_video_generation_stream(prompt: str, image_data: Optional[str]
     """Generate video using Lambda with URL polling and dead token retry support"""
     from ..services.lambda_manager import lambda_manager
     from ..services.generation_handler import DeadTokenError, InvalidTokenError, get_dead_token_config
-    
+
     dead_token_config = get_dead_token_config()
     max_retries = dead_token_config.max_retries if dead_token_config.enabled else 1
     disabled_token_ids = set()
-    
+
     start_time = time.time()
     db_task_id = None  # The user-facing task ID (first one created)
     current_token_obj = None
@@ -1270,11 +1278,11 @@ async def _lambda_video_generation_stream(prompt: str, image_data: Optional[str]
         try:
             # Acquire token (excluding disabled ones)
             current_token_obj = await generation_handler._acquire_token_for_generation(
-                is_image=False, 
+                is_image=False,
                 is_video=True,
                 excluded_token_ids=disabled_token_ids
             )
-            
+
             if retry_attempt == 0:
                 yield generation_handler._format_stream_chunk(
                     reasoning_content="Initializing generation request...",
@@ -1300,7 +1308,11 @@ async def _lambda_video_generation_stream(prompt: str, image_data: Optional[str]
                         status="started"
                     )
                 image_bytes = generation_handler._decode_base64_image(image_data)
-                media_id = await generation_handler.sora_client.upload_image(image_bytes, current_token_obj.token)
+                media_id = await generation_handler.sora_client.upload_image(
+                    image_bytes,
+                    current_token_obj.token,
+                    token_id=current_token_obj.id,
+                )
                 if retry_attempt == 0:
                     yield generation_handler._format_stream_chunk(
                         reasoning_content="Image uploaded successfully. Proceeding to generation...",
@@ -1331,7 +1343,7 @@ async def _lambda_video_generation_stream(prompt: str, image_data: Optional[str]
                 if generation_handler.concurrency_manager:
                     await generation_handler.concurrency_manager.release_video(current_token_obj.id)
                 disabled_token_ids.add(current_token_obj.id)
-                
+
                 if retry_attempt < max_retries - 1:
                     yield generation_handler._format_stream_chunk(
                         reasoning_content=f"Lambda task creation failed. Trying with a different token...",
@@ -1365,7 +1377,7 @@ async def _lambda_video_generation_stream(prompt: str, image_data: Optional[str]
                     "generate_video",
                     {"model": model_id, "prompt": prompt, "has_image": image_data is not None, "via_lambda": True}
                 )
-            
+
             await generation_handler.token_manager.record_usage(current_token_obj.id, is_video=True)
 
             # Poll task result with db_task_id for progress writes
@@ -1391,19 +1403,19 @@ async def _lambda_video_generation_stream(prompt: str, image_data: Optional[str]
                 duration
             )
             return  # Exit the retry loop on success
-            
+
         except DeadTokenError as e:
             print(f"[Lambda Stream] Dead token detected on attempt {retry_attempt + 1}/{max_retries}: token_id={e.token_id}")
-            
+
             # Disable the dead token
             await generation_handler.token_manager.disable_token(e.token_id)
             disabled_token_ids.add(e.token_id)
             print(f"[Lambda Stream] Auto-disabled dead token {e.token_id}")
-            
+
             # Release concurrency slot for dead token
             if generation_handler.concurrency_manager:
                 await generation_handler.concurrency_manager.release_video(e.token_id)
-            
+
             # Notify user
             yield generation_handler._format_stream_chunk(
                 reasoning_content=f"Dead token detected (progress stuck at 0%). Token has been disabled. {'Retrying with a different token...' if retry_attempt < max_retries - 1 else 'No more retries available.'}",
@@ -1411,7 +1423,7 @@ async def _lambda_video_generation_stream(prompt: str, image_data: Optional[str]
                 status="detected",
                 details={"token_id": e.token_id, "retry_attempt": retry_attempt + 1, "max_retries": max_retries}
             )
-            
+
             if retry_attempt >= max_retries - 1:
                 # No more retries - update DB and raise
                 error_msg = f"Generation failed after {max_retries} attempts due to dead tokens. Last error: {str(e)}"
@@ -1424,23 +1436,23 @@ async def _lambda_video_generation_stream(prompt: str, image_data: Optional[str]
                         duration=time.time() - start_time
                     )
                 raise Exception(error_msg)
-            
+
             # Small delay before retry
             await asyncio.sleep(1.0)
             continue
-        
+
         except InvalidTokenError as e:
             print(f"[Lambda Stream] Invalid token (auth error) on attempt {retry_attempt + 1}/{max_retries}: token_id={e.token_id}")
-            
+
             # Disable the invalid token
             await generation_handler.token_manager.disable_token(e.token_id)
             disabled_token_ids.add(e.token_id)
             print(f"[Lambda Stream] Auto-disabled invalid token {e.token_id}")
-            
+
             # Release concurrency slot for invalid token
             if generation_handler.concurrency_manager:
                 await generation_handler.concurrency_manager.release_video(e.token_id)
-            
+
             # Notify user
             yield generation_handler._format_stream_chunk(
                 reasoning_content=f"Token authentication failed (401). Token has been disabled. {'Retrying with a different token...' if retry_attempt < max_retries - 1 else 'No more retries available.'}",
@@ -1448,7 +1460,7 @@ async def _lambda_video_generation_stream(prompt: str, image_data: Optional[str]
                 status="detected",
                 details={"token_id": e.token_id, "retry_attempt": retry_attempt + 1, "max_retries": max_retries}
             )
-            
+
             if retry_attempt >= max_retries - 1:
                 # No more retries - update DB and raise
                 error_msg = f"Generation failed after {max_retries} attempts due to invalid tokens. Last error: {str(e)}"
@@ -1461,11 +1473,11 @@ async def _lambda_video_generation_stream(prompt: str, image_data: Optional[str]
                         duration=time.time() - start_time
                     )
                 raise Exception(error_msg)
-            
+
             # Small delay before retry
             await asyncio.sleep(0.5)
             continue
-            
+
         except (asyncio.CancelledError, GeneratorExit):
             if db_task_id:
                 await generation_handler.db.update_task(db_task_id, "cancelled", 0, error_message="Client disconnected")
@@ -1517,19 +1529,19 @@ async def create_video(
     api_key: str = Depends(verify_api_key_header)
 ):
     """Create video generation (Sora Compatible - new-api-main format)
-    
+
     Supports both multipart/form-data and JSON body.
     Compatible with new-api-main sora2 relay format.
-    
+
     **Async Mode (default):**
     - Returns immediately with id and status="in_progress"
     - Poll GET /v1/videos/{id} to check status
     - Download via GET /v1/videos/{id}/content when completed
-    
+
     **Sync Mode (async_mode=false):**
     - Waits for generation to complete
     - Returns final result with status="completed"
-    
+
     **Response format (new-api-main compatible):**
     ```json
     {
@@ -1561,38 +1573,38 @@ async def create_video(
             remix_target_id = body.get("remix_target_id", remix_target_id)
             metadata = body.get("metadata", metadata)
             async_mode = body.get("async_mode", async_mode)
-        
+
         if not prompt:
             raise HTTPException(status_code=400, detail="prompt is required")
-        
+
         # Normalize model name
         if model in ["sora", "sora-2", "sora2"]:
             model = "sora-2"
         elif model in ["sora-2-pro", "sora2-pro", "sora2pro"]:
             model = "sora-2-pro"
-        
+
         # Validate model
         valid_models = ["sora-2", "sora-2-pro"]
         if model not in valid_models:
             raise HTTPException(status_code=400, detail=f"Unsupported model: {model}. Valid: {', '.join(valid_models)}")
-        
+
         # Valid sizes per model
         valid_sizes = {
             "sora-2": ["720x1280", "1280x720"],
             "sora-2-pro": ["720x1280", "1280x720", "1024x1792", "1792x1024"],
         }
-        
+
         # Default size based on orientation
         if not size:
             if orientation == "portrait":
                 size = "720x1280"
             else:
                 size = "1280x720"
-        
+
         # Validate size
         if size not in valid_sizes[model]:
             raise HTTPException(status_code=400, detail=f"Invalid size for {model}. Valid sizes: {valid_sizes[model]}")
-        
+
         # Parse seconds
         duration = 15  # default
         if seconds:
@@ -1600,22 +1612,22 @@ async def create_video(
                 duration = int(seconds)
             except:
                 duration = 15
-        
+
         # Validate seconds
         valid_seconds = [10, 15]
         if duration not in valid_seconds:
             raise HTTPException(status_code=400, detail=f"Invalid seconds: {duration}. Valid: 10, 15")
-        
+
         # Determine orientation from size
         try:
             width, height = map(int, size.split('x'))
             orient = "landscape" if width > height else "portrait"
         except:
             orient = "portrait"
-        
+
         # Map to internal model (sora-video-{orientation}-{duration}s format)
         final_model = f"sora-video-{orient}-{duration}s"
-        
+
         # Process reference image
         image_data = None
         if input_reference:
@@ -1652,7 +1664,11 @@ async def create_video(
                     media_id = None
                     if image_data:
                         image_bytes = generation_handler._decode_base64_image(image_data)
-                        media_id = await generation_handler.sora_client.upload_image(image_bytes, token_obj.token)
+                        media_id = await generation_handler.sora_client.upload_image(
+                            image_bytes,
+                            token_obj.token,
+                            token_id=token_obj.id,
+                        )
 
                     model_config = MODEL_CONFIG[final_model]
                     n_frames = model_config.get("n_frames", duration * 30)
@@ -1689,7 +1705,7 @@ async def create_video(
                     )
 
                     await generation_handler.token_manager.record_usage(token_obj.id, is_video=True)
-                    
+
                     # Create background task with proper exception handling
                     async def _run_poll_with_error_handling():
                         try:
@@ -1711,7 +1727,7 @@ async def create_video(
                                 await db.update_task(task_id, "failed", 0, error_message=str(poll_error))
                             except Exception as db_error:
                                 print(f"[Lambda] Failed to update task status: {db_error}")
-                    
+
                     asyncio.create_task(_run_poll_with_error_handling())
 
                     return JSONResponse(
@@ -1736,18 +1752,18 @@ async def create_video(
                         await generation_handler.concurrency_manager.release_video(token_obj.id)
                     from ..core.error_utils import filter_error_message
                     raise HTTPException(status_code=500, detail=filter_error_message(e, error_type='video'))
-        
+
         # Generate task ID (new-api-main compatible format)
         video_id = f"{model}-{uuid.uuid4().hex[:12]}"
         created_at = int(time.time())  # Unix timestamp in seconds
-        
+
         # Async mode: create task and return immediately
         if async_mode:
             from ..core.database import Database
             from ..core.models import Task
-            
+
             db = Database()
-            
+
             # Create task in database
             task = Task(
                 task_id=video_id,
@@ -1758,7 +1774,7 @@ async def create_video(
                 progress=0.0
             )
             await db.create_task(task)
-            
+
             # Store task info in memory for progress tracking
             _video_tasks[video_id] = {
                 "id": video_id,
@@ -1780,10 +1796,10 @@ async def create_video(
                 "permalink": None,
                 "error": None,
             }
-            
+
             # Start background task
             asyncio.create_task(_process_video_generation_v2(video_id))
-            
+
             # Return immediately with queued status while progress is still 0
             # IMPORTANT: Must return 200 OK, not 201 Created - new-api checks for 200
             return JSONResponse(
@@ -1799,7 +1815,7 @@ async def create_video(
                     "size": size,
                 }
             )
-        
+
         # Sync mode: wait for generation to complete
         chunks = []
         async for chunk in generation_handler.handle_generation(
@@ -1811,13 +1827,13 @@ async def create_video(
             style_id=style_id
         ):
             chunks.append(chunk)
-        
+
         # Extract result
         video_info = _extract_video_info_from_chunks(chunks)
         url = video_info.get("url") or _extract_url_from_chunks(chunks)
         generation_id = video_info.get("generation_id")
         permalink = video_info.get("permalink")
-        
+
         if url:
             # Return completed response (new-api-main compatible)
             # IMPORTANT: Must return 200 OK, not 201 Created - new-api checks for 200
@@ -1842,14 +1858,14 @@ async def create_video(
             return JSONResponse(status_code=200, content=response)
         else:
             raise HTTPException(status_code=500, detail="Video generation failed")
-    
+
     except HTTPException:
         raise
     except Exception as e:
         # 过滤内部错误，不暴露给用户
         from ..core.error_utils import filter_error_message
         user_message = filter_error_message(e, error_type='video')
-        
+
         return JSONResponse(
             status_code=500,
             content={
@@ -1893,7 +1909,7 @@ async def get_video(
     if task_info and isinstance(task_info, dict):
         # Debug log
         print(f"[GetVideo] {video_id}: Found in memory. status={task_info['status']}, progress={task_info['progress']}")
-        
+
         # Build response (new-api-main compatible format)
         response = {
             "id": task_info["id"],
@@ -1905,16 +1921,16 @@ async def get_video(
             "seconds": task_info["seconds"],
             "size": task_info["size"],
         }
-        
+
         if task_info.get("completed_at"):
             response["completed_at"] = task_info["completed_at"]
-        
+
         if task_info.get("expires_at"):
             response["expires_at"] = task_info["expires_at"]
-        
+
         if task_info.get("remix_target_id"):
             response["remixed_from_video_id"] = task_info["remix_target_id"]
-        
+
         if task_info.get("error"):
             response["error"] = task_info["error"]
 
@@ -1931,17 +1947,17 @@ async def get_video(
             response["metadata"] = metadata
 
         return JSONResponse(content=response)
-    
+
     # Fallback to database
     from ..core.database import Database
     db = Database()
-    
+
     task = await db.get_task(video_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    
+
     created_at = int(task.created_at.timestamp()) if task.created_at else int(time.time())
-    
+
     # Map internal status to new-api-main compatible status
     status = _normalize_video_status(task.status, task.progress)
 
@@ -1949,18 +1965,18 @@ async def get_video(
     model = "sora-2"
     if "sora2pro" in task.model or "sora-2-pro" in task.model:
         model = "sora-2-pro"
-    
+
     # Extract duration and size
     duration = "15"
     if "10s" in task.model:
         duration = "10"
     elif "15s" in task.model:
         duration = "15"
-    
+
     size = "720x1280"
     if "landscape" in task.model:
         size = "1280x720"
-    
+
     response = {
         "id": video_id,
         "object": "video",
@@ -1971,10 +1987,10 @@ async def get_video(
         "seconds": duration,
         "size": size,
     }
-    
+
     if task.status == "completed" and task.completed_at:
         response["completed_at"] = int(task.completed_at.timestamp())
-    
+
     if task.error_message:
         response["error"] = {
             "message": task.error_message,
@@ -2009,19 +2025,19 @@ async def get_video_content(
     api_key: str = Depends(verify_api_key_header)
 ):
     """Get video content (redirect to actual video URL)
-    
+
     Redirects to the video URL for download when the task is completed.
     Compatible with new-api-main sora2 relay format.
     """
     from fastapi.responses import RedirectResponse
-    
+
     _prune_video_tasks()
     # First check in-memory tasks
     task_info = _video_tasks.get(video_id)
     if task_info and isinstance(task_info, dict):
         if task_info["status"] != "completed":
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail={
                     "error": {
                         "message": f"Task not completed. Current status: {task_info['status']}",
@@ -2029,11 +2045,11 @@ async def get_video_content(
                     }
                 }
             )
-        
+
         result_url = task_info.get("result_url")
         if not result_url:
             raise HTTPException(
-                status_code=404, 
+                status_code=404,
                 detail={
                     "error": {
                         "message": "Video content not available",
@@ -2041,17 +2057,17 @@ async def get_video_content(
                     }
                 }
             )
-        
+
         return RedirectResponse(url=result_url)
-    
+
     # Fallback to database
     from ..core.database import Database
     db = Database()
-    
+
     task = await db.get_task(video_id)
     if not task:
         raise HTTPException(
-            status_code=404, 
+            status_code=404,
             detail={
                 "error": {
                     "message": "Task not found",
@@ -2059,10 +2075,10 @@ async def get_video_content(
                 }
             }
         )
-    
+
     if task.status == "failed":
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail={
                 "error": {
                     "message": f"Video generation failed: {task.error_message or 'Unknown error'}",
@@ -2070,10 +2086,10 @@ async def get_video_content(
                 }
             }
         )
-    
+
     if task.status != "completed" or not task.result_urls:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail={
                 "error": {
                     "message": f"Task not completed. Current status: {task.status}",
@@ -2081,7 +2097,7 @@ async def get_video_content(
                 }
             }
         )
-    
+
     return RedirectResponse(url=task.result_urls)
 
 
@@ -2102,15 +2118,15 @@ async def remix_video(
     api_key: str = Depends(verify_api_key_header)
 ):
     """Remix an existing video (new-api-main compatible)
-    
+
     Creates a new video based on an existing video with a new prompt.
     Compatible with new-api-main sora2 relay format.
     IMPORTANT: Returns 200 OK (not 201) for new-api compatibility.
-    
+
     **Request:**
     - video_id: Source video ID to remix from
     - prompt: New prompt for the remix
-    
+
     **Response format (new-api-main compatible):**
     ```json
     {
@@ -2136,10 +2152,10 @@ async def remix_video(
             size = body.get("size", size)
             style_id = body.get("style_id", style_id)
             async_mode = body.get("async_mode", async_mode)
-        
+
         if not prompt:
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail={
                     "error": {
                         "message": "prompt is required",
@@ -2147,17 +2163,17 @@ async def remix_video(
                     }
                 }
             )
-        
+
         # Normalize model name
         if model in ["sora", "sora-2", "sora2"]:
             model = "sora-2"
         elif model in ["sora-2-pro", "sora2-pro", "sora2pro"]:
             model = "sora-2-pro"
-        
+
         # Default size
         if not size:
             size = "1280x720"
-        
+
         # Parse seconds
         duration = 15
         if seconds:
@@ -2165,27 +2181,27 @@ async def remix_video(
                 duration = int(seconds)
             except:
                 duration = 15
-        
+
         # Determine orientation from size
         try:
             width, height = map(int, size.split('x'))
             orient = "landscape" if width > height else "portrait"
         except:
             orient = "landscape"
-        
+
         # Map to internal model
         final_model = f"sora-video-{orient}-{duration}s"
-        
+
         # Generate new task ID
         new_video_id = f"{model}-{uuid.uuid4().hex[:12]}"
         created_at = int(time.time())
-        
+
         if async_mode:
             from ..core.database import Database
             from ..core.models import Task
-            
+
             db = Database()
-            
+
             # Create task in database
             task = Task(
                 task_id=new_video_id,
@@ -2196,7 +2212,7 @@ async def remix_video(
                 progress=0.0
             )
             await db.create_task(task)
-            
+
             # Store task info with remix reference
             _video_tasks[new_video_id] = {
                 "id": new_video_id,
@@ -2218,10 +2234,10 @@ async def remix_video(
                 "permalink": None,
                 "error": None,
             }
-            
+
             # Start background task
             asyncio.create_task(_process_video_generation_v2(new_video_id))
-            
+
             # IMPORTANT: Must return 200 OK for new-api compatibility
             return JSONResponse(
                 status_code=200,
@@ -2237,7 +2253,7 @@ async def remix_video(
                     "remixed_from_video_id": video_id,
                 }
             )
-        
+
         # Sync mode
         chunks = []
         async for chunk in generation_handler.handle_generation(
@@ -2248,10 +2264,10 @@ async def remix_video(
             style_id=style_id
         ):
             chunks.append(chunk)
-        
+
         video_info = _extract_video_info_from_chunks(chunks)
         url = video_info.get("url") or _extract_url_from_chunks(chunks)
-        
+
         if url:
             # IMPORTANT: Must return 200 OK for new-api compatibility
             return JSONResponse(
@@ -2271,7 +2287,7 @@ async def remix_video(
             )
         else:
             raise HTTPException(status_code=500, detail="Video remix failed")
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2305,7 +2321,7 @@ async def test_create_video(
     api_key: str = Depends(verify_api_key_header)
 ):
     """[TEST] Create video generation
-    
+
     Same as /v1/videos but uses /nf/pending (v1) for polling instead of /nf/pending/v2.
     """
     try:
@@ -2320,10 +2336,10 @@ async def test_create_video(
             style_id = body.get("style_id", style_id)
             input_image = body.get("input_image", input_image)
             remix_target_id = body.get("remix_target_id", remix_target_id)
-        
+
         if not prompt:
             raise HTTPException(status_code=400, detail="prompt is required")
-        
+
         # Determine model from seconds/orientation
         final_model = model
         if seconds or orientation:
@@ -2335,15 +2351,15 @@ async def test_create_video(
                 final_model = f"sora-video-{'portrait' if orient == 'portrait' else 'landscape'}-15s"
             else:
                 final_model = f"sora-video-{'portrait' if orient == 'portrait' else 'landscape'}-10s"
-        
+
         # Validate model
         if final_model not in MODEL_CONFIG:
             raise HTTPException(status_code=400, detail=f"Invalid model: {final_model}")
-        
+
         model_config = MODEL_CONFIG[final_model]
         if model_config["type"] != "video":
             raise HTTPException(status_code=400, detail=f"Model {final_model} is not a video model")
-        
+
         # Process reference image for image-to-video
         image_data = None
         if input_reference:
@@ -2353,7 +2369,7 @@ async def test_create_video(
             image_data = input_image
             if "base64," in image_data:
                 image_data = image_data.split("base64,", 1)[1]
-        
+
         # Non-streaming: collect all chunks and return final result
         # Use /nf/pending (v1) for polling in test endpoint
         chunks = []
@@ -2367,7 +2383,7 @@ async def test_create_video(
             use_pending_v1=True  # Use /nf/pending (v1) for polling
         ):
             chunks.append(chunk)
-        
+
         # Extract final URL
         video_info = _extract_video_info_from_chunks(chunks)
         url = video_info.get("url") or _extract_url_from_chunks(chunks)
@@ -2382,7 +2398,7 @@ async def test_create_video(
             })
         else:
             raise HTTPException(status_code=500, detail="Video generation failed")
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2493,10 +2509,10 @@ async def create_image(
     api_key: str = Depends(verify_api_key_header)
 ):
     """Create image generation (OpenAI-compatible)
-    
+
     Supports both multipart/form-data and JSON body.
     Returns final result only (non-streaming output).
-    
+
     **multipart/form-data example:**
     ```bash
     curl -X POST "https://your-domain.com/v1/images/generations" \\
@@ -2506,7 +2522,7 @@ async def create_image(
       -F size="1792x1024" \\
       -F input_reference="@reference.jpg;type=image/jpeg"
     ```
-    
+
     **JSON body example:**
     ```json
     {
@@ -2517,7 +2533,7 @@ async def create_image(
         "response_format": "url"
     }
     ```
-    
+
     **Response:**
     ```json
     {
@@ -2544,10 +2560,10 @@ async def create_image(
             style = body.get("style", style)
             response_format = body.get("response_format", response_format)
             input_image = body.get("input_image", input_image)
-        
+
         if not prompt:
             raise HTTPException(status_code=400, detail="prompt is required")
-        
+
         # Map size to model
         final_model = model
         if size:
@@ -2561,15 +2577,15 @@ async def create_image(
                     final_model = "sora-image"
             except (ValueError, AttributeError):
                 pass
-        
+
         # Validate model
         if final_model not in MODEL_CONFIG:
             raise HTTPException(status_code=400, detail=f"Invalid model: {final_model}")
-        
+
         model_config = MODEL_CONFIG[final_model]
         if model_config["type"] != "image":
             raise HTTPException(status_code=400, detail=f"Model {final_model} is not an image model")
-        
+
         # Process reference image
         image_data = None
         if input_reference:
@@ -2579,7 +2595,7 @@ async def create_image(
             image_data = input_image
             if "base64," in image_data:
                 image_data = image_data.split("base64,", 1)[1]
-        
+
         # Generate image (internal streaming, external non-streaming)
         chunks = []
         async for chunk in generation_handler.handle_generation(
@@ -2589,12 +2605,12 @@ async def create_image(
             stream=True
         ):
             chunks.append(chunk)
-        
+
         # Extract final URL
         url = _extract_url_from_chunks(chunks)
         if not url:
             raise HTTPException(status_code=500, detail="Image generation failed")
-        
+
         # OpenAI-compatible response
         return JSONResponse(content={
             "created": int(time.time()),
@@ -2605,7 +2621,7 @@ async def create_image(
                 }
             ]
         })
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2635,10 +2651,10 @@ async def create_character(
     api_key: str = Depends(verify_api_key_header)
 ):
     """Create a character from video or image
-    
+
     Supports both multipart/form-data and JSON body.
     Returns final result only (non-streaming output).
-    
+
     **multipart/form-data example:**
     ```bash
     curl -X POST "https://your-domain.com/v1/characters" \\
@@ -2649,7 +2665,7 @@ async def create_character(
       -F username="my_character" \\
       -F display_name="My Character"
     ```
-    
+
     **JSON body example:**
     ```json
     {
@@ -2660,7 +2676,7 @@ async def create_character(
         "display_name": "My Character"
     }
     ```
-    
+
     **Response:**
     ```json
     {
@@ -2694,15 +2710,15 @@ async def create_character(
             if not input_image:
                 input_image = body.get("image", input_image)
             style_id = body.get("style_id", style_id)
-        
+
         # Validate model
         if model not in MODEL_CONFIG:
             raise HTTPException(status_code=400, detail=f"Invalid model: {model}")
-        
+
         model_config = MODEL_CONFIG[model]
         if model_config["type"] != "video":
             raise HTTPException(status_code=400, detail=f"Model {model} is not a video model")
-        
+
         timestamps_value = timestamps
         timestamps_list = _parse_timestamps_list(timestamps_value)
         if isinstance(timestamps_value, str):
@@ -2817,7 +2833,7 @@ async def create_character(
             })
 
         raise HTTPException(status_code=400, detail="video or input_image is required for character creation")
-    
+
     except HTTPException:
         raise
     except Exception as e:

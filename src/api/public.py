@@ -55,17 +55,17 @@ class EnhancePromptRequest(BaseModel):
 @router.get("/v1/stats")
 async def get_public_stats(api_key: str = Depends(verify_api_key_header)):
     """Get system statistics
-    
+
     Returns:
         Token counts and generation statistics
     """
     try:
         tokens = await db.get_all_tokens()
         stats = await db.get_stats()
-        
+
         total_tokens = len(tokens)
         active_tokens = len([t for t in tokens if t.is_active])
-        
+
         return {
             "success": True,
             "stats": {
@@ -87,13 +87,13 @@ async def get_public_stats(api_key: str = Depends(verify_api_key_header)):
 @router.get("/v1/invite-codes")
 async def get_random_invite_code(api_key: str = Depends(verify_api_key_header)):
     """Get a random invite code from tokens with remaining Sora2 quota
-    
+
     Returns:
         A random invite code from an active token with available Sora2 quota
     """
     try:
         tokens = await db.get_all_tokens()
-        
+
         # Filter tokens that have Sora2 support and remaining quota
         available_tokens = []
         for t in tokens:
@@ -108,16 +108,16 @@ async def get_random_invite_code(api_key: str = Depends(verify_api_key_header)):
                         "total_count": t.sora2_total_count,
                         "redeemed_count": t.sora2_redeemed_count
                     })
-        
+
         if not available_tokens:
             return {
                 "success": False,
                 "message": "No available invite codes with remaining quota"
             }
-        
+
         # Randomly select one
         selected = random.choice(available_tokens)
-        
+
         return {
             "success": True,
             "invite_code": selected["invite_code"],
@@ -198,11 +198,11 @@ async def get_user_profile(
     api_key: str = Depends(verify_api_key_header)
 ):
     """Get user profile by username via Sora API
-    
+
     Args:
         username: Username to lookup
         token_id: Optional token ID to use (uses first available if not specified)
-    
+
     Returns:
         User profile data
     """
@@ -218,10 +218,10 @@ async def get_user_profile(
             if not active_tokens:
                 raise HTTPException(status_code=404, detail="No active tokens available")
             token_obj = active_tokens[0]
-        
+
         # Get profile via Sora API
         result = await generation_handler.sora_client.get_user_profile(username, token_obj.token)
-        
+
         return {
             "success": True,
             "profile": result
@@ -242,13 +242,13 @@ async def get_user_feed(
     api_key: str = Depends(verify_api_key_header)
 ):
     """Get user's published posts by user_id via Sora API
-    
+
     Args:
         user_id: User ID (e.g., user-4qluo8ATzeEsuvCpOUAfAZY0)
         limit: Number of items to fetch (default 8)
         cursor: Pagination cursor for next page
         token_id: Optional token ID to use (uses first available if not specified)
-    
+
     Returns:
         User's feed data with items array and cursor for pagination
     """
@@ -264,10 +264,10 @@ async def get_user_feed(
             if not active_tokens:
                 raise HTTPException(status_code=404, detail="No active tokens available")
             token_obj = active_tokens[0]
-        
+
         # Get user feed via Sora API
         result = await generation_handler.sora_client.get_user_feed(user_id, token_obj.token, limit, cursor)
-        
+
         return {
             "success": True,
             "user_id": user_id,
@@ -289,13 +289,13 @@ async def search_characters(
     api_key: str = Depends(verify_api_key_header)
 ):
     """Search for characters by username via Sora API
-    
+
     Args:
         username: Username to search for
         intent: Search intent - 'users' for all users, 'cameo' for users that can be used in video generation
         token_id: Optional token ID to use for the search (uses first available if not specified)
         limit: Number of results to return (default 10)
-    
+
     Returns:
         Simplified character search results with essential fields
     """
@@ -303,7 +303,7 @@ async def search_characters(
         # Validate intent
         if intent not in ["users", "cameo"]:
             raise HTTPException(status_code=400, detail="Invalid intent. Must be 'users' or 'cameo'")
-        
+
         # Get a token to use for the search
         if token_id:
             token_obj = await token_manager.get_token_by_id(token_id)
@@ -316,7 +316,7 @@ async def search_characters(
             if not active_tokens:
                 raise HTTPException(status_code=404, detail="No active tokens available")
             token_obj = active_tokens[0]
-        
+
         # Search via Sora API
         try:
             result = await generation_handler.sora_client.search_character(username, token_obj.token, limit, intent)
@@ -328,7 +328,7 @@ async def search_characters(
                 "count": 0,
                 "results": []
             }
-        
+
         # Extract and simplify the results
         items = result.get("items", [])
         simplified_results = []
@@ -351,7 +351,7 @@ async def search_characters(
                     "display_name": owner.get("display_name") if owner else None
                 } if owner else None
             })
-        
+
         return {
             "success": True,
             "query": username,
@@ -374,13 +374,13 @@ async def get_public_feed(
     api_key: str = Depends(verify_api_key_header)
 ):
     """Get public feed from Sora
-    
+
     Args:
         limit: Number of items to fetch (default 8)
         cut: Feed type - 'nf2_latest' for latest, 'nf2_top' for top posts
         cursor: Pagination cursor for next page
         token_id: Optional token ID to use (uses first available if not specified)
-    
+
     Returns:
         Simplified feed with essential fields
     """
@@ -396,10 +396,10 @@ async def get_public_feed(
             if not active_tokens:
                 raise HTTPException(status_code=404, detail="No active tokens available")
             token_obj = active_tokens[0]
-        
+
         # Get feed via Sora API
         result = await generation_handler.sora_client.get_public_feed(token_obj.token, limit, cut, cursor)
-        
+
         # Simplify the response
         items = result.get("items", [])
         simplified_items = []
@@ -408,7 +408,7 @@ async def get_public_feed(
             profile = item.get("profile", {})
             attachments = post.get("attachments", [])
             attachment = attachments[0] if attachments else {}
-            
+
             simplified_items.append({
                 "id": post.get("id"),
                 "text": post.get("text"),
@@ -438,7 +438,7 @@ async def get_public_feed(
                     "follower_count": profile.get("follower_count")
                 }
             })
-        
+
         return {
             "success": True,
             "cut": cut,
@@ -465,10 +465,10 @@ async def get_token_profile_feed(
         token_obj = await token_manager.get_token_by_id(token_id)
         if not token_obj:
             raise HTTPException(status_code=404, detail="Token not found")
-        
+
         # Get profile feed from Sora API
         feed = await generation_handler.sora_client.get_profile_feed(token_obj.token, limit=limit)
-        
+
         return {
             "success": True,
             "token_id": token_id,
@@ -487,10 +487,10 @@ async def get_token_pending_tasks(
     api_key: str = Depends(verify_api_key_header)
 ):
     """Get pending video generation tasks for a specific token (v1)
-    
+
     Args:
         token_id: Token ID to query
-    
+
     Returns:
         List of pending tasks with progress information
     """
@@ -498,9 +498,9 @@ async def get_token_pending_tasks(
         token_obj = await token_manager.get_token_by_id(token_id)
         if not token_obj:
             raise HTTPException(status_code=404, detail="Token not found")
-        
+
         tasks = await generation_handler.sora_client.get_pending_tasks(token_obj.token)
-        
+
         return {
             "success": True,
             "token_id": token_id,
@@ -520,10 +520,10 @@ async def get_token_pending_tasks_v2(
     api_key: str = Depends(verify_api_key_header)
 ):
     """Get pending video generation tasks for a specific token (v2)
-    
+
     Args:
         token_id: Token ID to query
-    
+
     Returns:
         List of pending tasks with progress information (v2 format)
     """
@@ -531,9 +531,9 @@ async def get_token_pending_tasks_v2(
         token_obj = await token_manager.get_token_by_id(token_id)
         if not token_obj:
             raise HTTPException(status_code=404, detail="Token not found")
-        
+
         tasks = await generation_handler.sora_client.get_pending_tasks_v2(token_obj.token)
-        
+
         return {
             "success": True,
             "token_id": token_id,
@@ -553,10 +553,10 @@ async def test_get_token_pending_tasks(
     api_key: str = Depends(verify_api_key_header)
 ):
     """[TEST] Get pending video generation tasks for a specific token (v1)
-    
+
     Args:
         token_id: Token ID to query
-    
+
     Returns:
         List of pending tasks with progress information
     """
@@ -564,9 +564,9 @@ async def test_get_token_pending_tasks(
         token_obj = await token_manager.get_token_by_id(token_id)
         if not token_obj:
             raise HTTPException(status_code=404, detail="Token not found")
-        
+
         tasks = await generation_handler.sora_client.get_pending_tasks(token_obj.token)
-        
+
         return {
             "success": True,
             "token_id": token_id,
@@ -586,10 +586,10 @@ async def test_get_token_pending_tasks_v2(
     api_key: str = Depends(verify_api_key_header)
 ):
     """[TEST] Get pending video generation tasks for a specific token (v2)
-    
+
     Args:
         token_id: Token ID to query
-    
+
     Returns:
         List of pending tasks with progress information (v2 format)
     """
@@ -597,9 +597,9 @@ async def test_get_token_pending_tasks_v2(
         token_obj = await token_manager.get_token_by_id(token_id)
         if not token_obj:
             raise HTTPException(status_code=404, detail="Token not found")
-        
+
         tasks = await generation_handler.sora_client.get_pending_tasks_v2(token_obj.token)
-        
+
         return {
             "success": True,
             "token_id": token_id,
@@ -620,11 +620,11 @@ async def get_task_progress(
     api_key: str = Depends(verify_api_key_header)
 ):
     """Get generation task progress by task ID (cache -> DB -> API)
-    
+
     Args:
         token_id: Token ID to use for query
         task_id: Task ID (e.g., task_01kcybbj56fp7vctvpmx0drrw1)
-    
+
     Returns:
         Task progress info (best available):
         - id: task ID
@@ -685,12 +685,12 @@ async def get_task_progress(
         token_obj = await token_manager.get_token_by_id(token_id)
         if not token_obj:
             raise HTTPException(status_code=404, detail="Token not found")
-        
-        task = await generation_handler.sora_client.get_task_progress(task_id, token_obj.token)
-        
+
+        task = await generation_handler.sora_client.get_task_progress(task_id, token_obj.token, token_id=token_obj.id)
+
         if not task:
             raise HTTPException(status_code=404, detail="Task not found or already completed")
-        
+
         return {
             "success": True,
             "task": task
@@ -715,31 +715,31 @@ class GetSoraLinkRequest(BaseModel):
 @router.post("/get-sora-link")
 async def get_sora_link(request: GetSoraLinkRequest):
     """获取 Sora 视频无水印下载链接
-    
+
     兼容 SoraRtTool 的 API 格式
-    
+
     Args:
         url: Sora 分享链接 (如 https://sora.chatgpt.com/p/s_xxx)
         token: 可选的访问令牌（如果配置了 API Token 验证）
-    
+
     Returns:
         {"download_link": "..."} 或 {"error": "..."}
     """
     try:
         from ..services.watermark_service import watermark_service
         from ..core.config import config
-        
+
         # 检查是否需要验证 token
         api_key = config.api_key
         if api_key:
             if request.token != api_key:
                 return {"error": "无效或缺失的访问令牌"}
-        
+
         if not request.url:
             return {"error": "未提供 URL"}
-        
+
         result = await watermark_service.get_download_link(request.url)
-        
+
         if result["success"]:
             return {"download_link": result["download_link"]}
         else:
@@ -755,10 +755,10 @@ async def remove_watermark(
     api_key: str = Depends(verify_api_key_header)
 ):
     """获取 Sora 视频无水印下载链接（需要 API Key 验证）
-    
+
     Args:
         url: Sora 分享链接 (如 https://sora.chatgpt.com/p/s_xxx)
-    
+
     Returns:
         {
             "success": true,
@@ -771,10 +771,10 @@ async def remove_watermark(
         }
     """
     from ..services.watermark_service import watermark_service
-    
+
     if not request.url:
         raise HTTPException(status_code=400, detail="未提供 URL")
-    
+
     result = await watermark_service.get_download_link(request.url)
-    
+
     return result

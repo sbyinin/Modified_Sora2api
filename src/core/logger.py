@@ -64,7 +64,8 @@ class DebugLogger:
         headers: Dict[str, str],
         body: Optional[Any] = None,
         files: Optional[Dict] = None,
-        proxy: Optional[str] = None
+        proxy: Optional[str] = None,
+        source: Optional[str] = None
     ):
         """Log API request details to log.txt"""
         if not config.debug_enabled or not config.debug_log_requests:
@@ -72,7 +73,8 @@ class DebugLogger:
 
         try:
             self._write_separator()
-            self.logger.info(f"🔵 [REQUEST] {self._format_timestamp()}")
+            source_tag = f"[{source}]" if source else ""
+            self.logger.info(f"🔵 [REQUEST]{source_tag} {self._format_timestamp()}")
             self._write_separator("-")
             
             # Basic info
@@ -130,7 +132,8 @@ class DebugLogger:
         status_code: int,
         headers: Dict[str, str],
         body: Any,
-        duration_ms: Optional[float] = None
+        duration_ms: Optional[float] = None,
+        source: Optional[str] = None
     ):
         """Log API response details to log.txt"""
         if not config.debug_enabled or not config.debug_log_responses:
@@ -138,7 +141,8 @@ class DebugLogger:
 
         try:
             self._write_separator()
-            self.logger.info(f"🟢 [RESPONSE] {self._format_timestamp()}")
+            source_tag = f"[{source}]" if source else ""
+            self.logger.info(f"🟢 [RESPONSE]{source_tag} {self._format_timestamp()}")
             self._write_separator("-")
             
             # Status
@@ -184,7 +188,8 @@ class DebugLogger:
         self,
         error_message: str,
         status_code: Optional[int] = None,
-        response_text: Optional[str] = None
+        response_text: Optional[str] = None,
+        source: Optional[str] = None
     ):
         """Log API error details to log.txt"""
         if not config.debug_enabled:
@@ -192,10 +197,11 @@ class DebugLogger:
 
         try:
             self._write_separator()
-            self.logger.info(f"🔴 [ERROR] {self._format_timestamp()}")
+            source_tag = f"[{source}]" if source else ""
+            self.logger.info(f"🔴 [ERROR]{source_tag} {self._format_timestamp()}")
             self._write_separator("-")
-            
-            if status_code:
+
+            if status_code is not None:
                 self.logger.info(f"Status Code: {status_code}")
             
             self.logger.info(f"Error Message: {error_message}")
@@ -228,6 +234,15 @@ class DebugLogger:
             self.logger.info(f"ℹ️  [{self._format_timestamp()}] {message}")
         except Exception as e:
             self.logger.error(f"Error logging info: {e}")
+
+    def log_warning(self, message: str):
+        """Log warning message to log.txt"""
+        if not config.debug_enabled:
+            return
+        try:
+            self.logger.warning(f"⚠️  [{self._format_timestamp()}] {message}")
+        except Exception as e:
+            self.logger.error(f"Error logging warning: {e}")
 
 # Global debug logger instance
 debug_logger = DebugLogger()

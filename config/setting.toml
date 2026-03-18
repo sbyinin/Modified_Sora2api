@@ -66,6 +66,8 @@ error_ban_threshold = 3
 proxy_enabled = false
 proxy_url = ""
 proxy_pool_enabled = false
+image_upload_proxy_enabled = false
+image_upload_proxy_url = ""
 
 [watermark_free]
 watermark_free_enabled = true
@@ -73,6 +75,7 @@ parse_method = "builtin"
 custom_parse_url = ""
 custom_parse_token = ""
 max_concurrency = 2
+fallback_on_failure = true
 
 [token_refresh]
 at_auto_refresh_enabled = false
@@ -95,3 +98,20 @@ api_url = "http://64.23.250.221:3000/v1/chat/completions"
 api_key = ""
 model = "gpt-5-nano"
 timeout = 30
+
+[call_logic]
+call_mode = "default"
+
+[timezone]
+# 时区偏移小时数，默认为东八区（中国标准时间）
+# 可选值：-12 到 +14 的整数
+# 常用时区：中国/新加坡 +8, 日本/韩国 +9, 伦敦 0, 纽约 -5, 洛杉矶 -8
+timezone_offset = 8
+
+[pow_service]
+mode = "local"
+use_token_for_pow = false
+server_url = "http://localhost:8002"
+api_key = "your-secure-api-key-here"
+proxy_enabled = false
+proxy_url = ""

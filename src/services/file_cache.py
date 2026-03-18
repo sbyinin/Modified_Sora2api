@@ -89,6 +89,9 @@ class FileCache:
     async def _cleanup_expired_files(self):
         """Remove expired cache files"""
         try:
+            if self.default_timeout == -1:
+                return
+
             current_time = time.time()
             removed_count = 0
             
@@ -140,24 +143,25 @@ class FileCache:
         
         return f"{url_hash}{ext}"
     
-    async def download_and_cache(self, url: str, media_type: str) -> str:
+    async def download_and_cache(self, url: str, media_type: str, token_id: Optional[int] = None) -> str:
         """
         Download file from URL and cache it locally
-        
+
         Args:
             url: File URL to download
             media_type: 'image' or 'video'
-            
+            token_id: Token ID for getting token-specific proxy (optional)
+
         Returns:
             Local cache filename
         """
         filename = self._generate_cache_filename(url, media_type)
         file_path = self.cache_dir / filename
-        
+
         # Check if already cached and not expired
         if file_path.exists():
             file_age = time.time() - file_path.stat().st_mtime
-            if file_age < self.default_timeout:
+            if self.default_timeout == -1 or file_age < self.default_timeout:
                 debug_logger.log_info(f"Cache hit: {filename}")
                 return filename
             else:
@@ -166,7 +170,7 @@ class FileCache:
                     file_path.unlink()
                 except Exception:
                     pass
-        
+
         # Download file
         debug_logger.log_info(f"Downloading file from: {url}")
 
@@ -176,8 +180,14 @@ class FileCache:
 
         for attempt in range(1, max_retries + 1):
             try:
+                request_kwargs = {"timeout": 60, "impersonate": "chrome"}
+                if self.proxy_manager:
+                    proxy_url = await self.proxy_manager.get_proxy_url(token_id)
+                    if proxy_url:
+                        request_kwargs["proxy"] = proxy_url
+
                 async with self._download_semaphore:
-                    response = await session.get(url, timeout=60)
+                    response = await session.get(url, **request_kwargs)
 
                     if response.status_code != 200:
                         raise Exception(f"Download failed: HTTP {response.status_code}")

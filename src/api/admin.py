@@ -191,6 +191,8 @@ class UpdateProxyConfigRequest(BaseModel):
     proxy_enabled: bool
     proxy_url: Optional[str] = None
     proxy_pool_enabled: bool = False
+    image_upload_proxy_enabled: Optional[bool] = None
+    image_upload_proxy_url: Optional[str] = None
 
 class UpdateAdminPasswordRequest(BaseModel):
     old_password: str
@@ -218,6 +220,20 @@ class UpdateWatermarkFreeConfigRequest(BaseModel):
     parse_method: Optional[str] = "builtin"  # "builtin", "third_party" or "custom"
     custom_parse_url: Optional[str] = None
     custom_parse_token: Optional[str] = None
+    fallback_on_failure: Optional[bool] = True
+
+class UpdateCallLogicConfigRequest(BaseModel):
+    call_mode: Optional[str] = None  # "default" or "polling"
+    polling_mode_enabled: Optional[bool] = None  # Legacy support
+    poll_interval: Optional[float] = None
+
+class UpdatePowServiceConfigRequest(BaseModel):
+    mode: str  # "local" or "external"
+    use_token_for_pow: Optional[bool] = False
+    server_url: Optional[str] = None
+    api_key: Optional[str] = None
+    proxy_enabled: Optional[bool] = None
+    proxy_url: Optional[str] = None
 
 class UpdateCloudflareSolverConfigRequest(BaseModel):
     solver_enabled: bool
@@ -900,7 +916,9 @@ async def get_proxy_config(token: str = Depends(verify_admin_token)) -> dict:
         "proxy_enabled": proxy_config.proxy_enabled,
         "proxy_url": proxy_config.proxy_url,
         "proxy_pool_enabled": proxy_config.proxy_pool_enabled,
-        "proxy_pool_count": pool_count
+        "proxy_pool_count": pool_count,
+        "image_upload_proxy_enabled": getattr(proxy_config, "image_upload_proxy_enabled", False),
+        "image_upload_proxy_url": getattr(proxy_config, "image_upload_proxy_url", None),
     }
 
 @router.post("/api/proxy/config")
@@ -910,10 +928,23 @@ async def update_proxy_config(
 ):
     """Update proxy configuration"""
     try:
+        current_config = await proxy_manager.get_proxy_config()
+        image_upload_proxy_enabled = (
+            getattr(current_config, "image_upload_proxy_enabled", False)
+            if request.image_upload_proxy_enabled is None
+            else request.image_upload_proxy_enabled
+        )
+        image_upload_proxy_url = (
+            getattr(current_config, "image_upload_proxy_url", None)
+            if request.image_upload_proxy_url is None
+            else request.image_upload_proxy_url
+        )
         await proxy_manager.update_proxy_config(
-            request.proxy_enabled, 
+            request.proxy_enabled,
             request.proxy_url,
-            request.proxy_pool_enabled
+            request.proxy_pool_enabled,
+            image_upload_proxy_enabled,
+            image_upload_proxy_url,
         )
         return {"success": True, "message": "Proxy configuration updated"}
     except Exception as e:
@@ -928,7 +959,8 @@ async def get_watermark_free_config(token: str = Depends(verify_admin_token)) ->
         "watermark_free_enabled": config_obj.watermark_free_enabled,
         "parse_method": config_obj.parse_method,
         "custom_parse_url": config_obj.custom_parse_url,
-        "custom_parse_token": config_obj.custom_parse_token
+        "custom_parse_token": config_obj.custom_parse_token,
+        "fallback_on_failure": config_obj.fallback_on_failure,
     }
 
 @router.post("/api/watermark-free/config")
@@ -942,14 +974,122 @@ async def update_watermark_free_config(
             request.watermark_free_enabled,
             request.parse_method,
             request.custom_parse_url,
-            request.custom_parse_token
+            request.custom_parse_token,
+            request.fallback_on_failure,
         )
 
-        # Update in-memory config
-        from ..core.config import config
         config.set_watermark_free_enabled(request.watermark_free_enabled)
+        if request.parse_method is not None:
+            if "watermark_free" not in config._config:
+                config._config["watermark_free"] = {}
+            config._config["watermark_free"]["parse_method"] = request.parse_method
+        if request.custom_parse_url is not None:
+            if "watermark_free" not in config._config:
+                config._config["watermark_free"] = {}
+            config._config["watermark_free"]["custom_parse_url"] = request.custom_parse_url
+        if request.custom_parse_token is not None:
+            if "watermark_free" not in config._config:
+                config._config["watermark_free"] = {}
+            config._config["watermark_free"]["custom_parse_token"] = request.custom_parse_token
+        if request.fallback_on_failure is not None:
+            if "watermark_free" not in config._config:
+                config._config["watermark_free"] = {}
+            config._config["watermark_free"]["fallback_on_failure"] = request.fallback_on_failure
 
         return {"success": True, "message": "Watermark-free mode configuration updated"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# Call logic config endpoints
+@router.get("/api/call-logic/config")
+async def get_call_logic_config(token: str = Depends(verify_admin_token)) -> dict:
+    """Get call logic configuration"""
+    config_obj = await db.get_call_logic_config()
+    call_mode = getattr(config_obj, "call_mode", None)
+    if call_mode not in ("default", "polling"):
+        call_mode = "polling" if config_obj.polling_mode_enabled else "default"
+    return {
+        "success": True,
+        "config": {
+            "call_mode": call_mode,
+            "polling_mode_enabled": call_mode == "polling",
+            "poll_interval": config_obj.poll_interval,
+        }
+    }
+
+@router.post("/api/call-logic/config")
+async def update_call_logic_config(
+    request: UpdateCallLogicConfigRequest,
+    token: str = Depends(verify_admin_token)
+):
+    """Update call logic configuration"""
+    try:
+        call_mode = request.call_mode if request.call_mode in ("default", "polling") else None
+        if call_mode is None and request.polling_mode_enabled is not None:
+            call_mode = "polling" if request.polling_mode_enabled else "default"
+        if call_mode is None:
+            call_mode = config.call_logic_mode
+
+        await db.update_call_logic_config(call_mode, request.poll_interval)
+
+        config.set_call_logic_mode(call_mode)
+        if request.poll_interval is not None:
+            config.set_poll_interval(request.poll_interval)
+
+        updated_config = await db.get_call_logic_config()
+        return {
+            "success": True,
+            "message": "Call logic configuration updated",
+            "config": {
+                "call_mode": updated_config.call_mode,
+                "polling_mode_enabled": updated_config.call_mode == "polling",
+                "poll_interval": updated_config.poll_interval,
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# POW service config endpoints
+@router.get("/api/pow/config")
+async def get_pow_service_config(token: str = Depends(verify_admin_token)) -> dict:
+    """Get POW service configuration"""
+    config_obj = await db.get_pow_service_config()
+    return {
+        "success": True,
+        "config": {
+            "mode": config_obj.mode,
+            "use_token_for_pow": config_obj.use_token_for_pow,
+            "server_url": config_obj.server_url or "",
+            "api_key": config_obj.api_key or "",
+            "proxy_enabled": config_obj.proxy_enabled,
+            "proxy_url": config_obj.proxy_url or "",
+        }
+    }
+
+@router.post("/api/pow/config")
+async def update_pow_service_config(
+    request: UpdatePowServiceConfigRequest,
+    token: str = Depends(verify_admin_token)
+):
+    """Update POW service configuration"""
+    try:
+        await db.update_pow_service_config(
+            mode=request.mode,
+            use_token_for_pow=request.use_token_for_pow or False,
+            server_url=request.server_url,
+            api_key=request.api_key,
+            proxy_enabled=request.proxy_enabled,
+            proxy_url=request.proxy_url,
+        )
+
+        config.set_pow_service_mode(request.mode)
+        config.set_pow_service_use_token_for_pow(request.use_token_for_pow or False)
+        config.set_pow_service_server_url(request.server_url or "")
+        config.set_pow_service_api_key(request.api_key or "")
+        config.set_pow_service_proxy_enabled(bool(request.proxy_enabled))
+        config.set_pow_service_proxy_url(request.proxy_url or "")
+
+        return {"success": True, "message": "POW service configuration updated"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
