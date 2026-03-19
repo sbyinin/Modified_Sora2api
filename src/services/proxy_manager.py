@@ -211,8 +211,17 @@ class ProxyManager:
     async def get_image_upload_proxy_url(self, token_id: Optional[int] = None) -> Optional[str]:
         """Get proxy URL specifically for image uploads"""
         config = await self.db.get_proxy_config()
+        image_upload_mode = getattr(config, "image_upload_proxy_mode", None)
         image_upload_enabled = getattr(config, "image_upload_proxy_enabled", False)
         image_upload_proxy = getattr(config, "image_upload_proxy_url", None)
+
+        if image_upload_mode == "direct":
+            return None
+        if image_upload_mode == "dedicated":
+            return self.normalize_proxy_url(image_upload_proxy)
+        if image_upload_mode == "inherit":
+            return await self.get_proxy_url(token_id=token_id)
+
         if image_upload_enabled and image_upload_proxy:
             return self.normalize_proxy_url(image_upload_proxy)
 
@@ -225,6 +234,7 @@ class ProxyManager:
         proxy_pool_enabled: bool = False,
         image_upload_proxy_enabled: bool = False,
         image_upload_proxy_url: Optional[str] = None,
+        image_upload_proxy_mode: Optional[str] = None,
     ):
         """Update proxy configuration"""
         normalized_proxy = self.normalize_proxy_url(proxy_url)
@@ -235,6 +245,7 @@ class ProxyManager:
             proxy_pool_enabled,
             image_upload_proxy_enabled,
             normalized_image_upload_proxy,
+            image_upload_proxy_mode,
         )
 
         # Reset proxy pool when config changes

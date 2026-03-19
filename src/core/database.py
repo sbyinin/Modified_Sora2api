@@ -491,6 +491,7 @@ class Database:
             proxy_pool_enabled = False
             image_upload_proxy_enabled = False
             image_upload_proxy_url = None
+            image_upload_proxy_mode = None
 
             if config_dict:
                 proxy_config = config_dict.get("proxy", {})
@@ -499,21 +500,25 @@ class Database:
                 proxy_pool_enabled = proxy_config.get("proxy_pool_enabled", False)
                 image_upload_proxy_enabled = proxy_config.get("image_upload_proxy_enabled", False)
                 image_upload_proxy_url = proxy_config.get("image_upload_proxy_url", "")
+                image_upload_proxy_mode = proxy_config.get("image_upload_proxy_mode")
                 # Convert empty string to None
                 proxy_url = proxy_url if proxy_url else None
                 image_upload_proxy_url = image_upload_proxy_url if image_upload_proxy_url else None
+                image_upload_proxy_mode = image_upload_proxy_mode if image_upload_proxy_mode else None
 
             await db.execute("""
                 INSERT INTO proxy_config (
-                    id, proxy_enabled, proxy_url, proxy_pool_enabled, image_upload_proxy_enabled, image_upload_proxy_url
+                    id, proxy_enabled, proxy_url, proxy_pool_enabled,
+                    image_upload_proxy_enabled, image_upload_proxy_url, image_upload_proxy_mode
                 )
-                VALUES (1, ?, ?, ?, ?, ?)
+                VALUES (1, ?, ?, ?, ?, ?, ?)
             """, (
                 proxy_enabled,
                 proxy_url,
                 proxy_pool_enabled,
                 image_upload_proxy_enabled,
                 image_upload_proxy_url,
+                image_upload_proxy_mode,
             ))
 
         # Ensure watermark_free_config has a row
@@ -864,6 +869,7 @@ class Database:
             ("proxy_config", "proxy_pool_enabled", "BOOLEAN DEFAULT 0"),
             ("proxy_config", "image_upload_proxy_enabled", "BOOLEAN DEFAULT 0"),
             ("proxy_config", "image_upload_proxy_url", "TEXT"),
+            ("proxy_config", "image_upload_proxy_mode", "TEXT"),
             ("call_logic_config", "call_mode", "TEXT DEFAULT 'default'"),
             ("call_logic_config", "polling_mode_enabled", "BOOLEAN DEFAULT 0"),
             ("call_logic_config", "poll_interval", "REAL DEFAULT 2.5"),
@@ -1158,6 +1164,7 @@ class Database:
                     proxy_pool_enabled BOOLEAN DEFAULT 0,
                     image_upload_proxy_enabled BOOLEAN DEFAULT 0,
                     image_upload_proxy_url TEXT,
+                    image_upload_proxy_mode TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -2498,12 +2505,14 @@ class Database:
         proxy_pool_enabled: bool = False,
         image_upload_proxy_enabled: bool = False,
         image_upload_proxy_url: Optional[str] = None,
+        image_upload_proxy_mode: Optional[str] = None,
     ):
         """Update proxy configuration with retry for optimistic lock conflicts
 
         Uses INSERT ... ON CONFLICT for SQLite or INSERT ... ON DUPLICATE KEY UPDATE for MySQL/TiDB
         """
         image_upload_proxy_url = image_upload_proxy_url if image_upload_proxy_url else None
+        image_upload_proxy_mode = image_upload_proxy_mode if image_upload_proxy_mode else None
         max_retries = 5
         for attempt in range(max_retries):
             try:
@@ -2518,19 +2527,19 @@ class Database:
                         await db.execute("""
                             UPDATE proxy_config
                             SET proxy_enabled = ?, proxy_url = ?, proxy_pool_enabled = ?,
-                                image_upload_proxy_enabled = ?, image_upload_proxy_url = ?,
+                                image_upload_proxy_enabled = ?, image_upload_proxy_url = ?, image_upload_proxy_mode = ?,
                                 updated_at = CURRENT_TIMESTAMP
                             WHERE id = 1
-                        """, (enabled, proxy_url, proxy_pool_enabled, image_upload_proxy_enabled, image_upload_proxy_url))
+                        """, (enabled, proxy_url, proxy_pool_enabled, image_upload_proxy_enabled, image_upload_proxy_url, image_upload_proxy_mode))
                     else:
                         # Insert new row
                         await db.execute("""
                             INSERT INTO proxy_config (
                                 id, proxy_enabled, proxy_url, proxy_pool_enabled,
-                                image_upload_proxy_enabled, image_upload_proxy_url, updated_at
+                                image_upload_proxy_enabled, image_upload_proxy_url, image_upload_proxy_mode, updated_at
                             )
-                            VALUES (1, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                        """, (enabled, proxy_url, proxy_pool_enabled, image_upload_proxy_enabled, image_upload_proxy_url))
+                            VALUES (1, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        """, (enabled, proxy_url, proxy_pool_enabled, image_upload_proxy_enabled, image_upload_proxy_url, image_upload_proxy_mode))
                     await db.commit()
                     return
             except Exception as e:

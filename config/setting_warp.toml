@@ -68,6 +68,7 @@ proxy_url = "socks5://warp:1080"
 proxy_pool_enabled = false
 image_upload_proxy_enabled = false
 image_upload_proxy_url = ""
+image_upload_proxy_mode = "inherit"
 
 [watermark_free]
 watermark_free_enabled = false

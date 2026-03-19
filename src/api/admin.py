@@ -193,6 +193,7 @@ class UpdateProxyConfigRequest(BaseModel):
     proxy_pool_enabled: bool = False
     image_upload_proxy_enabled: Optional[bool] = None
     image_upload_proxy_url: Optional[str] = None
+    image_upload_proxy_mode: Optional[str] = None
 
 class UpdateAdminPasswordRequest(BaseModel):
     old_password: str
@@ -919,6 +920,7 @@ async def get_proxy_config(token: str = Depends(verify_admin_token)) -> dict:
         "proxy_pool_count": pool_count,
         "image_upload_proxy_enabled": getattr(proxy_config, "image_upload_proxy_enabled", False),
         "image_upload_proxy_url": getattr(proxy_config, "image_upload_proxy_url", None),
+        "image_upload_proxy_mode": getattr(proxy_config, "image_upload_proxy_mode", None),
     }
 
 @router.post("/api/proxy/config")
@@ -939,12 +941,22 @@ async def update_proxy_config(
             if request.image_upload_proxy_url is None
             else request.image_upload_proxy_url
         )
+        image_upload_proxy_mode = (
+            getattr(current_config, "image_upload_proxy_mode", None)
+            if request.image_upload_proxy_mode is None
+            else request.image_upload_proxy_mode
+        )
+        if image_upload_proxy_mode is not None and image_upload_proxy_mode not in ("inherit", "dedicated", "direct"):
+            raise HTTPException(status_code=400, detail="Invalid image_upload_proxy_mode")
+        if image_upload_proxy_mode == "dedicated" and not image_upload_proxy_url:
+            raise HTTPException(status_code=400, detail="Image upload proxy URL is required when mode is dedicated")
         await proxy_manager.update_proxy_config(
             request.proxy_enabled,
             request.proxy_url,
             request.proxy_pool_enabled,
             image_upload_proxy_enabled,
             image_upload_proxy_url,
+            image_upload_proxy_mode,
         )
         return {"success": True, "message": "Proxy configuration updated"}
     except Exception as e:

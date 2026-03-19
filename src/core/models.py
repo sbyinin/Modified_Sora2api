@@ -115,6 +115,7 @@ class ProxyConfig(BaseModel):
     proxy_pool_enabled: bool = False  # Enable proxy pool rotation from data/proxy.txt
     image_upload_proxy_enabled: bool = False
     image_upload_proxy_url: Optional[str] = None
+    image_upload_proxy_mode: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
