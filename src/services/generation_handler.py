@@ -78,11 +78,11 @@ class PollingConfig:
         max_interval: Maximum polling interval cap (default: 60.0s)
     """
     low_progress_interval: float = 40.0  # progress < 30%
-    mid_progress_interval: float = 40.0  # 30% <= progress < 70%
-    high_progress_interval: float = 40.0  # progress >= 70%
+    mid_progress_interval: float = 90.0  # 30% <= progress < 70%
+    high_progress_interval: float = 90.0  # progress >= 70%
     stall_threshold: int = 2             # consecutive polls with no change
     stall_multiplier: float = 2.0        # interval increase when stalled
-    max_interval: float = 60.0           # maximum polling interval
+    max_interval: float = 90.0           # maximum polling interval
 
 
 class AdaptivePoller:
