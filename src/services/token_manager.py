@@ -1301,14 +1301,8 @@ class TokenManager:
                 self._token_cache.invalidate()
     
     async def record_success(self, token_id: int, is_video: bool = False):
-        """Record successful request (reset error count and increment stats)"""
+        """Record successful request (reset error count and update post-success state)"""
         await self.db.reset_error_count(token_id)
-        
-        # Increment generation count
-        if is_video:
-            await self.db.increment_video_count(token_id)
-        else:
-            await self.db.increment_image_count(token_id)
 
         # Update Sora2 remaining count after video generation
         if is_video:
