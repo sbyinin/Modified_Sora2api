@@ -779,7 +779,7 @@ class Database:
         
         使用版本号机制，只在版本变化时执行完整迁移检查
         """
-        CURRENT_DB_VERSION = 15  # 增加此版本号以触发迁移
+        CURRENT_DB_VERSION = 16  # 增加此版本号以触发迁移
         
         db = await self._get_connection()
         try:
@@ -816,6 +816,13 @@ class Database:
                 if await self._table_exists(db, "tasks") and not await self._column_exists(db, "tasks", "permalink"):
                     try:
                         await db.execute("ALTER TABLE tasks ADD COLUMN permalink TEXT")
+                        await db.commit()
+                    except Exception:
+                        pass
+                # 确保 proxy_config.image_upload_proxy_mode 列存在
+                if await self._table_exists(db, "proxy_config") and not await self._column_exists(db, "proxy_config", "image_upload_proxy_mode"):
+                    try:
+                        await db.execute("ALTER TABLE proxy_config ADD COLUMN image_upload_proxy_mode TEXT")
                         await db.commit()
                     except Exception:
                         pass
