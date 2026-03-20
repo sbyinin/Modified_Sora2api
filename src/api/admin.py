@@ -946,7 +946,7 @@ async def update_proxy_config(
             if request.image_upload_proxy_mode is None
             else request.image_upload_proxy_mode
         )
-        if image_upload_proxy_mode is not None and image_upload_proxy_mode not in ("inherit", "dedicated", "direct"):
+        if image_upload_proxy_mode is not None and image_upload_proxy_mode not in ("inherit", "dedicated", "direct", "remote_pool"):
             raise HTTPException(status_code=400, detail="Invalid image_upload_proxy_mode")
         if image_upload_proxy_mode == "dedicated" and not image_upload_proxy_url:
             raise HTTPException(status_code=400, detail="Image upload proxy URL is required when mode is dedicated")

@@ -1,8 +1,9 @@
 """Proxy management module"""
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from pathlib import Path
 import asyncio
-from datetime import datetime
+import random
+from datetime import datetime, timedelta
 from ..core.database import Database
 from ..core.models import ProxyConfig
 
@@ -16,6 +17,12 @@ class ProxyManager:
         self._pool_lock = asyncio.Lock()
         self._proxy_file_path = Path(__file__).parent.parent.parent / "data" / "proxy.txt"
         self._proxy_status: Dict[str, dict] = {}  # 代理状态缓存
+        self._image_remote_proxy_pool: List[str] = []
+        self._image_remote_pool_lock = asyncio.Lock()
+        self._image_remote_pool_refreshed_at: Optional[datetime] = None
+        self._image_remote_pool_source_updated_at: Optional[str] = None
+        self._image_remote_proxy_source_url = "https://raw.githubusercontent.com/CharlesPikachu/freeproxy/refs/heads/master/proxies.json"
+        self._image_remote_proxy_refresh_interval = timedelta(hours=1)
     
     def _split_concatenated_proxies(self, text: str) -> List[str]:
         """Split concatenated proxies like 'socks5://...socks5://...' into separate lines
@@ -168,7 +175,97 @@ class ProxyManager:
         if not parsed:
             raise ValueError(f"Invalid proxy_url format: {proxy_url}")
         return parsed
-    
+
+    def _should_refresh_image_remote_proxy_pool(self) -> bool:
+        """Check whether image upload remote proxy pool needs refresh"""
+        if not self._image_remote_proxy_pool or not self._image_remote_pool_refreshed_at:
+            return True
+        return datetime.now() - self._image_remote_pool_refreshed_at >= self._image_remote_proxy_refresh_interval
+
+    def _normalize_remote_image_proxy_item(self, item: Dict[str, Any]) -> Optional[str]:
+        """Normalize a remote image proxy item to standard proxy URL"""
+        protocol = str(item.get("protocol", "")).strip().lower()
+        if protocol not in ("http", "https"):
+            return None
+
+        ip = str(item.get("ip", "")).strip()
+        port = str(item.get("port", "")).strip()
+        if not ip or not port or not port.isdigit():
+            return None
+
+        try:
+            return self.normalize_proxy_url(f"{protocol}://{ip}:{port}")
+        except ValueError:
+            return None
+
+    async def _fetch_remote_image_proxy_pool(self) -> tuple[List[str], Optional[str]]:
+        """Fetch remote image upload proxy pool from fixed source"""
+        from curl_cffi.requests import AsyncSession
+
+        async with AsyncSession() as session:
+            response = await session.get(
+                self._image_remote_proxy_source_url,
+                timeout=30,
+                impersonate="chrome120"
+            )
+
+        if response.status_code != 200:
+            raise Exception(f"remote proxy pool request failed: HTTP {response.status_code}")
+
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise Exception("remote proxy pool response is not a JSON object")
+
+        data = payload.get("data")
+        if not isinstance(data, list):
+            raise Exception("remote proxy pool response missing data array")
+
+        proxies: List[str] = []
+        seen = set()
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            proxy_url = self._normalize_remote_image_proxy_item(item)
+            if proxy_url and proxy_url not in seen:
+                seen.add(proxy_url)
+                proxies.append(proxy_url)
+
+        return proxies, payload.get("updated_at")
+
+    async def _refresh_remote_image_proxy_pool(self, force: bool = False) -> List[str]:
+        """Refresh remote image upload proxy pool lazily"""
+        async with self._image_remote_pool_lock:
+            if not force and not self._should_refresh_image_remote_proxy_pool():
+                return list(self._image_remote_proxy_pool)
+
+            previous_pool = list(self._image_remote_proxy_pool)
+            try:
+                proxies, source_updated_at = await self._fetch_remote_image_proxy_pool()
+                if not proxies:
+                    raise Exception("remote proxy pool has no valid HTTP/HTTPS proxies")
+
+                self._image_remote_proxy_pool = proxies
+                self._image_remote_pool_refreshed_at = datetime.now()
+                self._image_remote_pool_source_updated_at = source_updated_at
+                print(
+                    f"✅ [ProxyManager] Refreshed image remote proxy pool: {len(proxies)} proxies"
+                    f" (source updated_at={source_updated_at or 'unknown'})"
+                )
+            except Exception as e:
+                if previous_pool:
+                    print(f"⚠️ [ProxyManager] Failed to refresh image remote proxy pool, keeping cached pool: {e}")
+                else:
+                    print(f"⚠️ [ProxyManager] Failed to refresh image remote proxy pool: {e}")
+
+            return list(self._image_remote_proxy_pool)
+
+    async def _get_random_remote_image_proxy_url(self) -> Optional[str]:
+        """Get a random proxy from the image upload remote pool"""
+        pool = await self._refresh_remote_image_proxy_pool()
+        if not pool:
+            return None
+        return random.choice(pool)
+
     async def get_proxy_url(self, token_id: Optional[int] = None, proxy_url: Optional[str] = None) -> Optional[str]:
         """Get proxy URL if enabled, with direct override, token fallback, and pool rotation support
 
@@ -221,6 +318,8 @@ class ProxyManager:
             return self.normalize_proxy_url(image_upload_proxy)
         if image_upload_mode == "inherit":
             return await self.get_proxy_url(token_id=token_id)
+        if image_upload_mode == "remote_pool":
+            return await self._get_random_remote_image_proxy_url()
 
         if image_upload_enabled and image_upload_proxy:
             return self.normalize_proxy_url(image_upload_proxy)
@@ -252,6 +351,11 @@ class ProxyManager:
         async with self._pool_lock:
             self._proxy_pool = []
             self._pool_index = 0
+
+        async with self._image_remote_pool_lock:
+            self._image_remote_proxy_pool = []
+            self._image_remote_pool_refreshed_at = None
+            self._image_remote_pool_source_updated_at = None
     
     async def get_proxy_config(self) -> ProxyConfig:
         """Get proxy configuration"""
