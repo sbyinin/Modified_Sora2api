@@ -32,6 +32,9 @@ from .db_pool import get_db_connection, get_pool
 from .config import config
 
 
+VALID_IMAGE_UPLOAD_PROXY_MODES = {"inherit", "dedicated", "direct", "remote_pool"}
+
+
 import warnings
 
 class _MySQLConnectionWrapper:
@@ -452,6 +455,48 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_request_logs_task_status_created ON request_logs(task_id, status_code, created_at)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_request_logs_task_status_id ON request_logs(task_id, status_code, id)")
 
+    async def _normalize_proxy_config_image_upload_mode(self, db):
+        """Normalize legacy image upload proxy config to mode/url only."""
+        if not await self._table_exists(db, "proxy_config"):
+            return
+
+        has_mode = await self._column_exists(db, "proxy_config", "image_upload_proxy_mode")
+        has_url = await self._column_exists(db, "proxy_config", "image_upload_proxy_url")
+        has_enabled = await self._column_exists(db, "proxy_config", "image_upload_proxy_enabled")
+
+        if not has_mode or not has_url:
+            return
+
+        cursor = await db.execute("SELECT * FROM proxy_config")
+        rows = await cursor.fetchall()
+        for row in rows:
+            row_id = self._get_row_value(row, "id", 1)
+            mode = self._get_row_value(row, "image_upload_proxy_mode")
+            url = self._get_row_value(row, "image_upload_proxy_url")
+
+            normalized_url = url.strip() if isinstance(url, str) else url
+            normalized_url = normalized_url or None
+
+            normalized_mode = mode.strip() if isinstance(mode, str) else mode
+            if normalized_mode in VALID_IMAGE_UPLOAD_PROXY_MODES:
+                await db.execute(
+                    "UPDATE proxy_config SET image_upload_proxy_mode = ?, image_upload_proxy_url = ? WHERE id = ?",
+                    (normalized_mode, normalized_url, row_id)
+                )
+                continue
+
+            legacy_enabled = False
+            if has_enabled:
+                legacy_enabled = bool(self._get_row_value(row, "image_upload_proxy_enabled", False))
+            else:
+                legacy_enabled = False
+
+            migrated_mode = "dedicated" if legacy_enabled and normalized_url else "inherit"
+            await db.execute(
+                "UPDATE proxy_config SET image_upload_proxy_mode = ?, image_upload_proxy_url = ? WHERE id = ?",
+                (migrated_mode, normalized_url, row_id)
+            )
+
     async def _ensure_config_rows(self, db, config_dict: dict = None):
         """Ensure all config tables have their default rows
 
@@ -489,37 +534,37 @@ class Database:
             proxy_enabled = False
             proxy_url = None
             proxy_pool_enabled = False
-            image_upload_proxy_enabled = False
             image_upload_proxy_url = None
-            image_upload_proxy_mode = None
+            image_upload_proxy_mode = "inherit"
 
             if config_dict:
                 proxy_config = config_dict.get("proxy", {})
                 proxy_enabled = proxy_config.get("proxy_enabled", False)
                 proxy_url = proxy_config.get("proxy_url", "")
                 proxy_pool_enabled = proxy_config.get("proxy_pool_enabled", False)
-                image_upload_proxy_enabled = proxy_config.get("image_upload_proxy_enabled", False)
                 image_upload_proxy_url = proxy_config.get("image_upload_proxy_url", "")
-                image_upload_proxy_mode = proxy_config.get("image_upload_proxy_mode")
+                image_upload_proxy_mode = proxy_config.get("image_upload_proxy_mode") or "inherit"
                 # Convert empty string to None
                 proxy_url = proxy_url if proxy_url else None
                 image_upload_proxy_url = image_upload_proxy_url if image_upload_proxy_url else None
-                image_upload_proxy_mode = image_upload_proxy_mode if image_upload_proxy_mode else None
+                if image_upload_proxy_mode not in VALID_IMAGE_UPLOAD_PROXY_MODES:
+                    image_upload_proxy_mode = "inherit"
 
             await db.execute("""
                 INSERT INTO proxy_config (
                     id, proxy_enabled, proxy_url, proxy_pool_enabled,
-                    image_upload_proxy_enabled, image_upload_proxy_url, image_upload_proxy_mode
+                    image_upload_proxy_url, image_upload_proxy_mode
                 )
-                VALUES (1, ?, ?, ?, ?, ?, ?)
+                VALUES (1, ?, ?, ?, ?, ?)
             """, (
                 proxy_enabled,
                 proxy_url,
                 proxy_pool_enabled,
-                image_upload_proxy_enabled,
                 image_upload_proxy_url,
                 image_upload_proxy_mode,
             ))
+
+        await self._normalize_proxy_config_image_upload_mode(db)
 
         # Ensure watermark_free_config has a row
         cursor = await db.execute("SELECT COUNT(*) FROM watermark_free_config")
@@ -779,7 +824,7 @@ class Database:
         
         使用版本号机制，只在版本变化时执行完整迁移检查
         """
-        CURRENT_DB_VERSION = 16  # 增加此版本号以触发迁移
+        CURRENT_DB_VERSION = 17  # 增加此版本号以触发迁移
         
         db = await self._get_connection()
         try:
@@ -827,6 +872,7 @@ class Database:
                     except Exception:
                         pass
                 await self._ensure_config_rows(db, config_dict)
+                await self._normalize_proxy_config_image_upload_mode(db)
                 await self._ensure_token_stats_unique_index(db)
                 await self._ensure_request_logs_indexes(db)
                 await db.commit()
@@ -874,7 +920,6 @@ class Database:
             ("watermark_free_config", "custom_parse_token", "TEXT"),
             ("watermark_free_config", "fallback_on_failure", "BOOLEAN DEFAULT 1"),
             ("proxy_config", "proxy_pool_enabled", "BOOLEAN DEFAULT 0"),
-            ("proxy_config", "image_upload_proxy_enabled", "BOOLEAN DEFAULT 0"),
             ("proxy_config", "image_upload_proxy_url", "TEXT"),
             ("proxy_config", "image_upload_proxy_mode", "TEXT"),
             ("call_logic_config", "call_mode", "TEXT DEFAULT 'default'"),
@@ -1169,9 +1214,8 @@ class Database:
                     proxy_enabled BOOLEAN DEFAULT 0,
                     proxy_url TEXT,
                     proxy_pool_enabled BOOLEAN DEFAULT 0,
-                    image_upload_proxy_enabled BOOLEAN DEFAULT 0,
                     image_upload_proxy_url TEXT,
-                    image_upload_proxy_mode TEXT,
+                    image_upload_proxy_mode TEXT DEFAULT 'inherit',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -2503,14 +2547,13 @@ class Database:
                 return ProxyConfig(**dict(row))
             # If no row exists, return a default config
             # This should not happen in normal operation as _ensure_config_rows should create it
-            return ProxyConfig(proxy_enabled=False)
+            return ProxyConfig(proxy_enabled=False, image_upload_proxy_mode="inherit")
     
     async def update_proxy_config(
         self,
         enabled: bool,
         proxy_url: Optional[str],
         proxy_pool_enabled: bool = False,
-        image_upload_proxy_enabled: bool = False,
         image_upload_proxy_url: Optional[str] = None,
         image_upload_proxy_mode: Optional[str] = None,
     ):
@@ -2519,7 +2562,7 @@ class Database:
         Uses INSERT ... ON CONFLICT for SQLite or INSERT ... ON DUPLICATE KEY UPDATE for MySQL/TiDB
         """
         image_upload_proxy_url = image_upload_proxy_url if image_upload_proxy_url else None
-        image_upload_proxy_mode = image_upload_proxy_mode if image_upload_proxy_mode else None
+        image_upload_proxy_mode = image_upload_proxy_mode if image_upload_proxy_mode in VALID_IMAGE_UPLOAD_PROXY_MODES else "inherit"
         max_retries = 5
         for attempt in range(max_retries):
             try:
@@ -2534,19 +2577,20 @@ class Database:
                         await db.execute("""
                             UPDATE proxy_config
                             SET proxy_enabled = ?, proxy_url = ?, proxy_pool_enabled = ?,
-                                image_upload_proxy_enabled = ?, image_upload_proxy_url = ?, image_upload_proxy_mode = ?,
+                                image_upload_proxy_url = ?, image_upload_proxy_mode = ?,
                                 updated_at = CURRENT_TIMESTAMP
                             WHERE id = 1
-                        """, (enabled, proxy_url, proxy_pool_enabled, image_upload_proxy_enabled, image_upload_proxy_url, image_upload_proxy_mode))
+                        """, (enabled, proxy_url, proxy_pool_enabled, image_upload_proxy_url, image_upload_proxy_mode))
                     else:
                         # Insert new row
                         await db.execute("""
                             INSERT INTO proxy_config (
                                 id, proxy_enabled, proxy_url, proxy_pool_enabled,
-                                image_upload_proxy_enabled, image_upload_proxy_url, image_upload_proxy_mode, updated_at
+                                image_upload_proxy_url, image_upload_proxy_mode, updated_at
                             )
-                            VALUES (1, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                        """, (enabled, proxy_url, proxy_pool_enabled, image_upload_proxy_enabled, image_upload_proxy_url, image_upload_proxy_mode))
+                            VALUES (1, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        """, (enabled, proxy_url, proxy_pool_enabled, image_upload_proxy_url, image_upload_proxy_mode))
+                    await self._normalize_proxy_config_image_upload_mode(db)
                     await db.commit()
                     return
             except Exception as e:

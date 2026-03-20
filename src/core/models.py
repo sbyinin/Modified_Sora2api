@@ -113,9 +113,8 @@ class ProxyConfig(BaseModel):
     proxy_enabled: bool  # Read from database, initialized from setting.toml on first startup
     proxy_url: Optional[str] = None  # Read from database, initialized from setting.toml on first startup
     proxy_pool_enabled: bool = False  # Enable proxy pool rotation from data/proxy.txt
-    image_upload_proxy_enabled: bool = False
     image_upload_proxy_url: Optional[str] = None
-    image_upload_proxy_mode: Optional[str] = None
+    image_upload_proxy_mode: str = "inherit"
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

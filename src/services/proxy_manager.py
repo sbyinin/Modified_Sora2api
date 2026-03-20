@@ -308,30 +308,31 @@ class ProxyManager:
     async def get_image_upload_proxy_url(self, token_id: Optional[int] = None) -> Optional[str]:
         """Get proxy URL specifically for image uploads"""
         config = await self.db.get_proxy_config()
-        image_upload_mode = getattr(config, "image_upload_proxy_mode", None)
-        image_upload_enabled = getattr(config, "image_upload_proxy_enabled", False)
+        image_upload_mode = getattr(config, "image_upload_proxy_mode", "inherit") or "inherit"
         image_upload_proxy = getattr(config, "image_upload_proxy_url", None)
 
         if image_upload_mode == "direct":
             return None
         if image_upload_mode == "dedicated":
-            return self.normalize_proxy_url(image_upload_proxy)
+            normalized_proxy = self.normalize_proxy_url(image_upload_proxy)
+            if not normalized_proxy:
+                raise ValueError("Image upload proxy URL is required when mode is dedicated")
+            return normalized_proxy
         if image_upload_mode == "inherit":
             return await self.get_proxy_url(token_id=token_id)
         if image_upload_mode == "remote_pool":
-            return await self._get_random_remote_image_proxy_url()
+            proxy_url = await self._get_random_remote_image_proxy_url()
+            if proxy_url:
+                return proxy_url
+            raise RuntimeError("Image upload remote proxy pool is unavailable")
 
-        if image_upload_enabled and image_upload_proxy:
-            return self.normalize_proxy_url(image_upload_proxy)
-
-        return await self.get_proxy_url(token_id=token_id)
+        raise ValueError(f"Invalid image upload proxy mode: {image_upload_mode}")
 
     async def update_proxy_config(
         self,
         enabled: bool,
         proxy_url: Optional[str],
         proxy_pool_enabled: bool = False,
-        image_upload_proxy_enabled: bool = False,
         image_upload_proxy_url: Optional[str] = None,
         image_upload_proxy_mode: Optional[str] = None,
     ):
@@ -342,7 +343,6 @@ class ProxyManager:
             enabled,
             normalized_proxy,
             proxy_pool_enabled,
-            image_upload_proxy_enabled,
             normalized_image_upload_proxy,
             image_upload_proxy_mode,
         )

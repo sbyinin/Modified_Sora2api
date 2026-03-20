@@ -66,9 +66,8 @@ error_ban_threshold = 3
 proxy_enabled = false
 proxy_url = ""
 proxy_pool_enabled = false
-image_upload_proxy_enabled = false
 image_upload_proxy_url = ""
-# 图片上传代理模式：inherit=继承普通代理，dedicated=使用 image_upload_proxy_url，direct=直连，remote_pool=每小时懒刷新远程代理池并在上传时随机选择 HTTP/HTTPS 代理
+# 图片上传代理模式：inherit=继承普通代理，dedicated=使用 image_upload_proxy_url，direct=直连，remote_pool=每小时懒刷新远程代理池并在上传时随机选择 HTTP/HTTPS 代理；若远程池不可用则直接报错
 image_upload_proxy_mode = "inherit"
 
 [watermark_free]

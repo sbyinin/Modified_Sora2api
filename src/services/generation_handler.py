@@ -41,7 +41,7 @@ class DeadTokenDetectionConfig:
         max_retries: Maximum number of token retries before giving up
     """
     enabled: bool = True
-    zero_progress_timeout: float = 60.0  # 60 seconds at 0% after leaving queued/pending = dead token
+    zero_progress_timeout: float = 300.0  # 300 seconds at 0% after leaving queued/pending = dead token
     max_retries: int = 3  # Maximum retries with different tokens
 
 
